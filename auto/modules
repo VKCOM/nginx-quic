@@ -403,6 +403,33 @@ if [ $HTTP = YES ]; then
 
     ngx_module_type=HTTP
 
+    if [ $HTTP_V3 = YES ]; then
+        USE_OPENSSL=YES
+        USE_OPENSSL_QUIC=YES
+        have=NGX_HTTP_V3 . auto/have
+        have=NGX_HTTP_HEADERS . auto/have
+
+        HTTP_SSL=YES
+
+        # XXX for Huffman
+        HTTP_V2=YES
+
+        ngx_module_name=ngx_http_v3_module
+        ngx_module_incs=src/http/v3
+        ngx_module_deps="src/http/v3/ngx_http_v3.h \
+                         src/http/v3/ngx_http_v3_parse.h"
+        ngx_module_srcs="src/http/v3/ngx_http_v3.c \
+                         src/http/v3/ngx_http_v3_parse.c \
+                         src/http/v3/ngx_http_v3_tables.c \
+                         src/http/v3/ngx_http_v3_streams.c \
+                         src/http/v3/ngx_http_v3_request.c \
+                         src/http/v3/ngx_http_v3_module.c"
+        ngx_module_libs=
+        ngx_module_link=$HTTP_V3
+
+        . auto/module
+    fi
+
     if [ $HTTP_V2 = YES ]; then
         have=NGX_HTTP_V2 . auto/have
         have=NGX_HTTP_HEADERS . auto/have
@@ -1248,6 +1275,17 @@ if [ $USE_OPENSSL = YES ]; then
     ngx_module_libs=
     ngx_module_link=YES
     ngx_module_order=
+
+    if [ $USE_OPENSSL_QUIC = YES ]; then
+        ngx_module_deps="$ngx_module_deps \
+                         src/event/ngx_event_quic.h \
+                         src/event/ngx_event_quic_transport.h \
+                         src/event/ngx_event_quic_protection.h"
+        ngx_module_srcs="$ngx_module_srcs \
+                         src/event/ngx_event_quic.c \
+                         src/event/ngx_event_quic_transport.c \
+                         src/event/ngx_event_quic_protection.c"
+    fi
 
     . auto/module
 fi
