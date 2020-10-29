@@ -14,6 +14,7 @@
 
 #include <openssl/ssl.h>
 #include <openssl/err.h>
+#include <openssl/aes.h>
 #include <openssl/bn.h>
 #include <openssl/conf.h>
 #include <openssl/crypto.h>
@@ -22,6 +23,12 @@
 #include <openssl/engine.h>
 #endif
 #include <openssl/evp.h>
+#ifdef OPENSSL_IS_BORINGSSL
+#include <openssl/hkdf.h>
+#include <openssl/chacha.h>
+#else
+#include <openssl/kdf.h>
+#endif
 #include <openssl/hmac.h>
 #ifndef OPENSSL_NO_OCSP
 #include <openssl/ocsp.h>

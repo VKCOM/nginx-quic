@@ -143,7 +143,9 @@ ngx_http_parse_request_line(ngx_http_request_t *r, ngx_buf_t *b)
 
         /* HTTP methods: GET, HEAD, POST */
         case sw_start:
+            r->parse_start = p;
             r->request_start = p;
+            r->method_start = p;
 
             if (ch == CR || ch == LF) {
                 break;
@@ -158,7 +160,7 @@ ngx_http_parse_request_line(ngx_http_request_t *r, ngx_buf_t *b)
 
         case sw_method:
             if (ch == ' ') {
-                r->method_end = p - 1;
+                r->method_end = p;
                 m = r->request_start;
 
                 switch (p - m) {
@@ -831,6 +833,10 @@ done:
         r->request_end = p;
     }
 
+    if (r->http_protocol.data) {
+        r->http_protocol.len = r->request_end - r->http_protocol.data;
+    }
+
     r->http_version = r->http_major * 1000 + r->http_minor;
     r->state = sw_start;
 
@@ -882,6 +888,7 @@ ngx_http_parse_header_line(ngx_http_request_t *r, ngx_buf_t *b,
 
         /* first char */
         case sw_start:
+            r->parse_start = p;
             r->header_name_start = p;
             r->invalid_header = 0;
 
