@@ -1455,6 +1455,12 @@ ngx_tcp_nodelay(ngx_connection_t *c)
         return NGX_OK;
     }
 
+#if (NGX_HTTP_V3)
+    if (c->quic != NULL) {
+        return NGX_OK;
+    }
+#endif
+
     ngx_log_debug0(NGX_LOG_DEBUG_CORE, c->log, 0, "tcp_nodelay");
 
     tcp_nodelay = 1;
