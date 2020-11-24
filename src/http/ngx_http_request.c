@@ -55,7 +55,6 @@ static ngx_int_t ngx_http_post_action(ngx_http_request_t *r);
 static void ngx_http_close_request(ngx_http_request_t *r, ngx_int_t error);
 static void ngx_http_log_request(ngx_http_request_t *r);
 
-static u_char *ngx_http_log_error(ngx_log_t *log, u_char *buf, size_t len);
 static u_char *ngx_http_log_error_handler(ngx_http_request_t *r,
     ngx_http_request_t *sr, u_char *buf, size_t len);
 
@@ -302,6 +301,57 @@ ngx_http_init_connection(ngx_connection_t *c)
 
     /* the default server configuration for the address:port */
     hc->conf_ctx = hc->addr_conf->default_server->ctx;
+
+#if (NGX_HTTP_QUIC)
+
+    if (hc->addr_conf->quic) {
+        ngx_quic_conf_t           *qcf;
+        ngx_http_connection_t     *phc;
+        ngx_http_core_loc_conf_t  *clcf;
+
+        hc->ssl = 1;
+
+#if (NGX_HTTP_V3)
+
+        if (hc->addr_conf->http3) {
+            ngx_int_t  rc;
+
+            rc = ngx_http_v3_init_connection(c);
+
+            if (rc == NGX_ERROR) {
+                ngx_http_close_connection(c);
+                return;
+            }
+
+            if (rc == NGX_DONE) {
+                return;
+            }
+        }
+
+#endif
+
+        if (c->quic == NULL) {
+            c->log->connection = c->number;
+
+            qcf = ngx_http_get_module_srv_conf(hc->conf_ctx,
+                                               ngx_http_quic_module);
+            ngx_quic_run(c, qcf);
+            return;
+        }
+
+        phc = c->quic->parent->data;
+
+        if (phc->ssl_servername) {
+            hc->ssl_servername = phc->ssl_servername;
+            hc->conf_ctx = phc->conf_ctx;
+
+            clcf = ngx_http_get_module_loc_conf(hc->conf_ctx,
+                                                ngx_http_core_module);
+            ngx_set_connection_log(c, clcf->error_log);
+        }
+    }
+
+#endif
 
     ctx = ngx_palloc(c->pool, sizeof(ngx_http_log_ctx_t));
     if (ctx == NULL) {
@@ -618,6 +668,12 @@ ngx_http_alloc_request(ngx_connection_t *c)
 
     r->method = NGX_HTTP_UNKNOWN;
     r->http_version = NGX_HTTP_VERSION_10;
+
+#if (NGX_HTTP_V3)
+    if (hc->addr_conf->http3) {
+        r->http_version = NGX_HTTP_VERSION_30;
+    }
+#endif
 
     r->headers_in.content_length_n = -1;
     r->headers_in.keep_alive_n = -1;
@@ -1084,7 +1140,16 @@ ngx_http_process_request_line(ngx_event_t *rev)
             }
         }
 
-        rc = ngx_http_parse_request_line(r, r->header_in);
+        switch (r->http_version) {
+#if (NGX_HTTP_V3)
+        case NGX_HTTP_VERSION_30:
+            rc = ngx_http_v3_parse_request(r, r->header_in);
+            break;
+#endif
+
+        default: /* HTTP/1.x */
+            rc = ngx_http_parse_request_line(r, r->header_in);
+        }
 
         if (rc == NGX_OK) {
 
@@ -1092,17 +1157,13 @@ ngx_http_process_request_line(ngx_event_t *rev)
 
             r->request_line.len = r->request_end - r->request_start;
             r->request_line.data = r->request_start;
-            r->request_length = r->header_in->pos - r->request_start;
+            r->request_length = r->header_in->pos - r->parse_start;
 
             ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0,
                            "http request line: \"%V\"", &r->request_line);
 
-            r->method_name.len = r->method_end - r->request_start + 1;
-            r->method_name.data = r->request_line.data;
-
-            if (r->http_protocol.data) {
-                r->http_protocol.len = r->request_end - r->http_protocol.data;
-            }
+            r->method_name.len = r->method_end - r->method_start;
+            r->method_name.data = r->method_start;
 
             if (ngx_http_process_request_uri(r) != NGX_OK) {
                 break;
@@ -1169,6 +1230,15 @@ ngx_http_process_request_line(ngx_event_t *rev)
             break;
         }
 
+        if (rc == NGX_BUSY) {
+            if (ngx_handle_read_event(rev, 0) != NGX_OK) {
+                ngx_http_close_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
+                return;
+            }
+
+            break;
+        }
+
         if (rc != NGX_AGAIN) {
 
             /* there was error while a request line parsing */
@@ -1198,8 +1268,8 @@ ngx_http_process_request_line(ngx_event_t *rev)
             }
 
             if (rv == NGX_DECLINED) {
-                r->request_line.len = r->header_in->end - r->request_start;
-                r->request_line.data = r->request_start;
+                r->request_line.len = r->header_in->end - r->parse_start;
+                r->request_line.data = r->parse_start;
 
                 ngx_log_error(NGX_LOG_INFO, c->log, 0,
                               "client sent too long URI");
@@ -1359,7 +1429,7 @@ ngx_http_process_request_headers(ngx_event_t *rev)
 
     cmcf = ngx_http_get_module_main_conf(r, ngx_http_core_module);
 
-    rc = NGX_AGAIN;
+    rc = NGX_OK;
 
     for ( ;; ) {
 
@@ -1375,7 +1445,7 @@ ngx_http_process_request_headers(ngx_event_t *rev)
                 }
 
                 if (rv == NGX_DECLINED) {
-                    p = r->header_name_start;
+                    p = r->parse_start;
 
                     r->lingering_close = 1;
 
@@ -1395,7 +1465,7 @@ ngx_http_process_request_headers(ngx_event_t *rev)
 
                     ngx_log_error(NGX_LOG_INFO, c->log, 0,
                                 "client sent too long header line: \"%*s...\"",
-                                len, r->header_name_start);
+                                len, r->parse_start);
 
                     ngx_http_finalize_request(r,
                                             NGX_HTTP_REQUEST_HEADER_TOO_LARGE);
@@ -1413,21 +1483,32 @@ ngx_http_process_request_headers(ngx_event_t *rev)
         /* the host header could change the server configuration context */
         cscf = ngx_http_get_module_srv_conf(r, ngx_http_core_module);
 
-        rc = ngx_http_parse_header_line(r, r->header_in,
-                                        cscf->underscores_in_headers);
+        switch (r->http_version) {
+#if (NGX_HTTP_V3)
+        case NGX_HTTP_VERSION_30:
+            rc = ngx_http_v3_parse_header(r, r->header_in,
+                                          cscf->underscores_in_headers);
+            break;
+#endif
+
+        default: /* HTTP/1.x */
+            rc = ngx_http_parse_header_line(r, r->header_in,
+                                            cscf->underscores_in_headers);
+        }
 
         if (rc == NGX_OK) {
 
-            r->request_length += r->header_in->pos - r->header_name_start;
+            r->request_length += r->header_in->pos - r->parse_start;
 
             if (r->invalid_header && cscf->ignore_invalid_headers) {
 
                 /* there was error while a header line parsing */
 
                 ngx_log_error(NGX_LOG_INFO, c->log, 0,
-                              "client sent invalid header line: \"%*s\"",
-                              r->header_end - r->header_name_start,
-                              r->header_name_start);
+                              "client sent invalid header line: \"%*s: %*s\"",
+                              r->header_name_end - r->header_name_start,
+                              r->header_name_start,
+                              r->header_end - r->header_start, r->header_start);
                 continue;
             }
 
@@ -1443,11 +1524,17 @@ ngx_http_process_request_headers(ngx_event_t *rev)
 
             h->key.len = r->header_name_end - r->header_name_start;
             h->key.data = r->header_name_start;
-            h->key.data[h->key.len] = '\0';
+
+            if (h->key.data[h->key.len]) {
+                h->key.data[h->key.len] = '\0';
+            }
 
             h->value.len = r->header_end - r->header_start;
             h->value.data = r->header_start;
-            h->value.data[h->value.len] = '\0';
+
+            if (h->value.data[h->value.len]) {
+                h->value.data[h->value.len] = '\0';
+            }
 
             h->lowcase_key = ngx_pnalloc(r->pool, h->key.len);
             if (h->lowcase_key == NULL) {
@@ -1483,7 +1570,7 @@ ngx_http_process_request_headers(ngx_event_t *rev)
             ngx_log_debug0(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                            "http header done");
 
-            r->request_length += r->header_in->pos - r->header_name_start;
+            r->request_length += r->header_in->pos - r->parse_start;
 
             r->http_state = NGX_HTTP_PROCESS_REQUEST_STATE;
 
@@ -1598,7 +1685,7 @@ ngx_http_alloc_large_header_buffer(ngx_http_request_t *r,
         return NGX_OK;
     }
 
-    old = request_line ? r->request_start : r->header_name_start;
+    old = r->parse_start;
 
     cscf = ngx_http_get_module_srv_conf(r, ngx_http_core_module);
 
@@ -1676,6 +1763,14 @@ ngx_http_alloc_large_header_buffer(ngx_http_request_t *r,
     b->pos = new + (r->header_in->pos - old);
     b->last = new + (r->header_in->pos - old);
 
+    r->parse_start = new;
+
+    r->header_in = b;
+
+    if (r->http_version > NGX_HTTP_VERSION_11) {
+        return NGX_OK;
+    }
+
     if (request_line) {
         r->request_start = new;
 
@@ -1723,8 +1818,6 @@ ngx_http_alloc_large_header_buffer(ngx_http_request_t *r,
         r->header_start = new + (r->header_start - old);
         r->header_end = new + (r->header_end - old);
     }
-
-    r->header_in = b;
 
     return NGX_OK;
 }
@@ -1946,11 +2039,44 @@ ngx_http_process_request_header(ngx_http_request_t *r)
         return NGX_ERROR;
     }
 
-    if (r->headers_in.host == NULL && r->http_version > NGX_HTTP_VERSION_10) {
+    if (r->headers_in.host == NULL && r->http_version == NGX_HTTP_VERSION_11) {
         ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
                    "client sent HTTP/1.1 request without \"Host\" header");
         ngx_http_finalize_request(r, NGX_HTTP_BAD_REQUEST);
         return NGX_ERROR;
+    }
+
+    if (r->headers_in.host == NULL && r->http_version == NGX_HTTP_VERSION_20) {
+        ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                      "client sent HTTP/2 request without "
+                      "\":authority\" or \"Host\" header");
+        ngx_http_finalize_request(r, NGX_HTTP_BAD_REQUEST);
+        return NGX_ERROR;
+    }
+
+    if (r->http_version == NGX_HTTP_VERSION_30) {
+        if (r->headers_in.server.len == 0) {
+            ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                          "client sent HTTP/3 request without "
+                          "\":authority\" or \"Host\" header");
+            ngx_http_finalize_request(r, NGX_HTTP_BAD_REQUEST);
+            return NGX_ERROR;
+        }
+
+        if (r->headers_in.host) {
+            if (r->headers_in.host->value.len != r->headers_in.server.len
+                || ngx_memcmp(r->headers_in.host->value.data,
+                              r->headers_in.server.data,
+                              r->headers_in.server.len)
+                   != 0)
+            {
+                ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                              "client sent HTTP/3 request with different "
+                              "values of \":authority\" and \"Host\" headers");
+                ngx_http_finalize_request(r, NGX_HTTP_BAD_REQUEST);
+                return NGX_ERROR;
+            }
+        }
     }
 
     if (r->headers_in.content_length) {
@@ -1990,6 +2116,12 @@ ngx_http_process_request_header(ngx_http_request_t *r)
             return NGX_ERROR;
         }
     }
+
+#if (NGX_HTTP_V3)
+    if (r->http_version == NGX_HTTP_VERSION_30) {
+        r->headers_in.chunked = 1;
+    }
+#endif
 
     if (r->headers_in.connection_type == NGX_HTTP_CONNECTION_KEEP_ALIVE) {
         if (r->headers_in.keep_alive) {
@@ -2714,6 +2846,13 @@ ngx_http_finalize_connection(ngx_http_request_t *r)
     }
 #endif
 
+#if (NGX_HTTP_QUIC)
+    if (r->connection->quic) {
+        ngx_http_close_request(r, 0);
+        return;
+    }
+#endif
+
     clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
 
     if (r->main->count != 1) {
@@ -2914,6 +3053,19 @@ ngx_http_test_reading(ngx_http_request_t *r)
 
     if (r->stream) {
         if (c->error) {
+            err = 0;
+            goto closed;
+        }
+
+        return;
+    }
+
+#endif
+
+#if (NGX_HTTP_QUIC)
+
+    if (c->quic) {
+        if (c->read->error) {
             err = 0;
             goto closed;
         }
@@ -3420,11 +3572,13 @@ ngx_http_set_lingering_close(ngx_connection_t *c)
         }
     }
 
-    if (ngx_shutdown_socket(c->fd, NGX_WRITE_SHUTDOWN) == -1) {
-        ngx_connection_error(c, ngx_socket_errno,
-                             ngx_shutdown_socket_n " failed");
-        ngx_http_close_request(r, 0);
-        return;
+    if (c->fd != NGX_INVALID_FILE) {
+        if (ngx_shutdown_socket(c->fd, NGX_WRITE_SHUTDOWN) == -1) {
+            ngx_connection_error(c, ngx_socket_errno,
+                                 ngx_shutdown_socket_n " failed");
+            ngx_http_close_request(r, 0);
+            return;
+        }
     }
 
     ngx_add_timer(rev, clcf->lingering_timeout);
@@ -3758,7 +3912,7 @@ ngx_http_close_connection(ngx_connection_t *c)
 }
 
 
-static u_char *
+u_char *
 ngx_http_log_error(ngx_log_t *log, u_char *buf, size_t len)
 {
     u_char              *p;
@@ -3805,15 +3959,15 @@ ngx_http_log_error_handler(ngx_http_request_t *r, ngx_http_request_t *sr,
     len -= p - buf;
     buf = p;
 
-    if (r->request_line.data == NULL && r->request_start) {
-        for (p = r->request_start; p < r->header_in->last; p++) {
+    if (r->request_line.data == NULL && r->parse_start) {
+        for (p = r->parse_start; p < r->header_in->last; p++) {
             if (*p == CR || *p == LF) {
                 break;
             }
         }
 
-        r->request_line.len = p - r->request_start;
-        r->request_line.data = r->request_start;
+        r->request_line.len = p - r->parse_start;
+        r->request_line.data = r->parse_start;
     }
 
     if (r->request_line.len) {
