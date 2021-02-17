@@ -87,6 +87,13 @@ ngx_http_read_client_request_body(ngx_http_request_t *r,
     }
 #endif
 
+#if (NGX_HTTP_V3)
+    if (r->http_version == NGX_HTTP_VERSION_30) {
+        rc = ngx_http_v3_read_request_body(r);
+        goto done;
+    }
+#endif
+
     preread = r->header_in->last - r->header_in->pos;
 
     if (preread) {
@@ -220,6 +227,18 @@ ngx_http_read_unbuffered_request_body(ngx_http_request_t *r)
 #if (NGX_HTTP_V2)
     if (r->stream) {
         rc = ngx_http_v2_read_unbuffered_request_body(r);
+
+        if (rc == NGX_OK) {
+            r->reading_body = 0;
+        }
+
+        return rc;
+    }
+#endif
+
+#if (NGX_HTTP_V3)
+    if (r->http_version == NGX_HTTP_VERSION_30) {
+        rc = ngx_http_v3_read_unbuffered_request_body(r);
 
         if (rc == NGX_OK) {
             r->reading_body = 0;
@@ -584,6 +603,12 @@ ngx_http_discard_request_body(ngx_http_request_t *r)
     }
 #endif
 
+#if (NGX_HTTP_V3)
+    if (r->http_version == NGX_HTTP_VERSION_30) {
+        return NGX_OK;
+    }
+#endif
+
     if (ngx_http_test_expect(r) != NGX_OK) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
@@ -876,11 +901,7 @@ ngx_http_test_expect(ngx_http_request_t *r)
 
     if (r->expect_tested
         || r->headers_in.expect == NULL
-        || r->http_version < NGX_HTTP_VERSION_11
-#if (NGX_HTTP_V2)
-        || r->stream != NULL
-#endif
-       )
+        || r->http_version != NGX_HTTP_VERSION_11)
     {
         return NGX_OK;
     }

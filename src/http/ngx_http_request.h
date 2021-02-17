@@ -24,6 +24,7 @@
 #define NGX_HTTP_VERSION_10                1000
 #define NGX_HTTP_VERSION_11                1001
 #define NGX_HTTP_VERSION_20                2000
+#define NGX_HTTP_VERSION_30                3000
 
 #define NGX_HTTP_UNKNOWN                   0x0001
 #define NGX_HTTP_GET                       0x0002
@@ -324,6 +325,7 @@ typedef struct {
 
     unsigned                          ssl:1;
     unsigned                          proxy_protocol:1;
+    unsigned                          http3:1;
 } ngx_http_connection_t;
 
 
@@ -593,6 +595,10 @@ struct ngx_http_request_s {
     u_char                           *host_end;
     u_char                           *port_start;
     u_char                           *port_end;
+
+#if (NGX_HTTP_V3)
+    void                             *h3_parse;
+#endif
 
     unsigned                          http_minor:16;
     unsigned                          http_major:16;
