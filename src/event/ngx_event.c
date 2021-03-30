@@ -266,6 +266,26 @@ ngx_process_events_and_timers(ngx_cycle_t *cycle)
 ngx_int_t
 ngx_handle_read_event(ngx_event_t *rev, ngx_uint_t flags)
 {
+#if (NGX_QUIC)
+
+    ngx_connection_t  *c;
+
+    c = rev->data;
+
+    if (c->quic) {
+
+        if (!rev->active && !rev->ready) {
+            rev->active = 1;
+
+        } else if (rev->active && (rev->ready || (flags & NGX_CLOSE_EVENT))) {
+            rev->active = 0;
+        }
+
+        return NGX_OK;
+    }
+
+#endif
+
     if (ngx_event_flags & NGX_USE_CLEAR_EVENT) {
 
         /* kqueue, epoll */
@@ -336,13 +356,29 @@ ngx_handle_write_event(ngx_event_t *wev, size_t lowat)
 {
     ngx_connection_t  *c;
 
-    if (lowat) {
-        c = wev->data;
+    c = wev->data;
 
+    if (lowat) {
         if (ngx_send_lowat(c, lowat) == NGX_ERROR) {
             return NGX_ERROR;
         }
     }
+
+#if (NGX_QUIC)
+
+    if (c->quic) {
+
+        if (!wev->active && !wev->ready) {
+            wev->active = 1;
+
+        } else if (wev->active && wev->ready) {
+            wev->active = 0;
+        }
+
+        return NGX_OK;
+    }
+
+#endif
 
     if (ngx_event_flags & NGX_USE_CLEAR_EVENT) {
 
@@ -913,6 +949,12 @@ ngx_int_t
 ngx_send_lowat(ngx_connection_t *c, size_t lowat)
 {
     int  sndlowat;
+
+#if (NGX_QUIC)
+    if (c->quic) {
+        return NGX_OK;
+    }
+#endif
 
 #if (NGX_HAVE_LOWAT_EVENT)
 
