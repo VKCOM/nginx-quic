@@ -1226,6 +1226,10 @@ ngx_quic_generate_ack(ngx_connection_t *c, ngx_quic_send_ctx_t *ctx)
         }
     }
 
+    if (ctx->pending_ack == NGX_QUIC_UNSET_PN) {
+        return NGX_OK;
+    }
+
     if (ngx_quic_send_ack(c, ctx) != NGX_OK) {
         return NGX_ERROR;
     }
