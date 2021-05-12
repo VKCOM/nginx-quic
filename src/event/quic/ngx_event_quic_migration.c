@@ -483,6 +483,10 @@ ngx_quic_handle_migration(ngx_connection_t *c, ngx_quic_header_t *pkt)
 
     next = qsock->path; /* going to migrate to this path... */
 
+    if (next == NULL) {
+        return NGX_ERROR;
+    }
+
     ngx_log_error(NGX_LOG_INFO, c->log, 0,
                    "quic migration from #%uL:%uL:%uL (%s)"
                    " to #%uL:%uL:%uL (%s)",
