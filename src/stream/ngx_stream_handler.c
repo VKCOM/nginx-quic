@@ -115,6 +115,23 @@ ngx_stream_init_connection(ngx_connection_t *c)
         }
     }
 
+#if (NGX_STREAM_QUIC)
+
+    if (addr_conf->quic) {
+        ngx_quic_conf_t  *qcf;
+
+        if (c->quic == NULL) {
+            c->log->connection = c->number;
+
+            qcf = ngx_stream_get_module_srv_conf(addr_conf->ctx,
+                                                 ngx_stream_quic_module);
+            ngx_quic_run(c, qcf);
+            return;
+        }
+    }
+
+#endif
+
     s = ngx_pcalloc(c->pool, sizeof(ngx_stream_session_t));
     if (s == NULL) {
         ngx_stream_close_connection(c);

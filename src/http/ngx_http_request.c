@@ -31,10 +31,6 @@ static ngx_int_t ngx_http_process_connection(ngx_http_request_t *r,
 static ngx_int_t ngx_http_process_user_agent(ngx_http_request_t *r,
     ngx_table_elt_t *h, ngx_uint_t offset);
 
-static ngx_int_t ngx_http_validate_host(ngx_str_t *host, ngx_pool_t *pool,
-    ngx_uint_t alloc);
-static ngx_int_t ngx_http_set_virtual_server(ngx_http_request_t *r,
-    ngx_str_t *host);
 static ngx_int_t ngx_http_find_virtual_server(ngx_connection_t *c,
     ngx_http_virtual_names_t *virtual_names, ngx_str_t *host,
     ngx_http_request_t *r, ngx_http_core_srv_conf_t **cscfp);
@@ -52,10 +48,8 @@ static void ngx_http_keepalive_handler(ngx_event_t *ev);
 static void ngx_http_set_lingering_close(ngx_connection_t *c);
 static void ngx_http_lingering_close_handler(ngx_event_t *ev);
 static ngx_int_t ngx_http_post_action(ngx_http_request_t *r);
-static void ngx_http_close_request(ngx_http_request_t *r, ngx_int_t error);
 static void ngx_http_log_request(ngx_http_request_t *r);
 
-static u_char *ngx_http_log_error(ngx_log_t *log, u_char *buf, size_t len);
 static u_char *ngx_http_log_error_handler(ngx_http_request_t *r,
     ngx_http_request_t *sr, u_char *buf, size_t len);
 
@@ -304,6 +298,14 @@ ngx_http_init_connection(ngx_connection_t *c)
     /* the default server configuration for the address:port */
     hc->conf_ctx = hc->addr_conf->default_server->ctx;
 
+#if (NGX_HTTP_QUIC)
+    if (hc->addr_conf->quic) {
+        if (ngx_http_quic_init(c) == NGX_DONE) {
+            return;
+        }
+    }
+#endif
+
     ctx = ngx_palloc(c->pool, sizeof(ngx_http_log_ctx_t));
     if (ctx == NULL) {
         ngx_http_close_connection(c);
@@ -328,6 +330,13 @@ ngx_http_init_connection(ngx_connection_t *c)
 #if (NGX_HTTP_V2)
     if (hc->addr_conf->http2) {
         rev->handler = ngx_http_v2_init;
+    }
+#endif
+
+#if (NGX_HTTP_V3)
+    if (hc->addr_conf->http3) {
+        ngx_http_v3_init(c);
+        return;
     }
 #endif
 
@@ -2109,7 +2118,7 @@ ngx_http_process_request(ngx_http_request_t *r)
 }
 
 
-static ngx_int_t
+ngx_int_t
 ngx_http_validate_host(ngx_str_t *host, ngx_pool_t *pool, ngx_uint_t alloc)
 {
     u_char  *h, ch;
@@ -2200,7 +2209,7 @@ ngx_http_validate_host(ngx_str_t *host, ngx_pool_t *pool, ngx_uint_t alloc)
 }
 
 
-static ngx_int_t
+ngx_int_t
 ngx_http_set_virtual_server(ngx_http_request_t *r, ngx_str_t *host)
 {
     ngx_int_t                  rc;
@@ -2723,6 +2732,13 @@ ngx_http_finalize_connection(ngx_http_request_t *r)
     }
 #endif
 
+#if (NGX_HTTP_QUIC)
+    if (r->connection->quic) {
+        ngx_http_close_request(r, 0);
+        return;
+    }
+#endif
+
     clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
 
     if (r->main->count != 1) {
@@ -2928,6 +2944,19 @@ ngx_http_test_reading(ngx_http_request_t *r)
 
     if (r->stream) {
         if (c->error) {
+            err = 0;
+            goto closed;
+        }
+
+        return;
+    }
+
+#endif
+
+#if (NGX_HTTP_QUIC)
+
+    if (c->quic) {
+        if (c->read->error) {
             err = 0;
             goto closed;
         }
@@ -3599,7 +3628,7 @@ ngx_http_post_action(ngx_http_request_t *r)
 }
 
 
-static void
+void
 ngx_http_close_request(ngx_http_request_t *r, ngx_int_t rc)
 {
     ngx_connection_t  *c;
@@ -3773,7 +3802,7 @@ ngx_http_close_connection(ngx_connection_t *c)
 }
 
 
-static u_char *
+u_char *
 ngx_http_log_error(ngx_log_t *log, u_char *buf, size_t len)
 {
     u_char              *p;
