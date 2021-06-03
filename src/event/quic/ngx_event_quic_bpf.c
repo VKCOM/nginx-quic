@@ -10,7 +10,11 @@
 
 #define NGX_QUIC_BPF_VARNAME  "NGINX_BPF_MAPS"
 #define NGX_QUIC_BPF_VARSEP    ';'
+#define NGX_QUIC_BPF_FDSEP     '-'
 #define NGX_QUIC_BPF_ADDRSEP   '#'
+
+
+#define NGX_QUIC_BPF_ACTIVE_KEYS_MAX 256
 
 
 #define ngx_quic_bpf_get_conf(cycle)                                          \
@@ -27,6 +31,7 @@
 typedef struct {
     ngx_queue_t           queue;
     int                   map_fd;
+    int                   map_active_fd;
 
     struct sockaddr      *sockaddr;
     socklen_t             socklen;
@@ -130,6 +135,10 @@ ngx_quic_bpf_module_init(ngx_cycle_t *cycle)
     ngx_pool_cleanup_t   *cln;
     ngx_quic_bpf_conf_t  *bcf;
 
+    if (ngx_test_config) {
+        return NGX_OK;
+    }
+
     ccf = ngx_core_get_conf(cycle);
     bcf = ngx_quic_bpf_get_conf(cycle);
 
@@ -210,6 +219,7 @@ ngx_quic_bpf_cleanup(void *data)
         grp = ngx_queue_data(q, ngx_quic_sock_group_t, queue);
 
         ngx_quic_bpf_close(ngx_cycle->log, grp->map_fd, "map");
+        ngx_quic_bpf_close(ngx_cycle->log, grp->map_active_fd, "active_map");
     }
 }
 
@@ -263,6 +273,9 @@ ngx_quic_bpf_alloc_group(ngx_cycle_t *cycle, struct sockaddr *sa,
     if (grp == NULL) {
         return NULL;
     }
+
+    grp->map_fd = -1;
+    grp->map_active_fd = -1;
 
     grp->socklen = socklen;
     grp->sockaddr = ngx_palloc(cycle->pool, socklen);
@@ -322,6 +335,33 @@ ngx_quic_bpf_create_group(ngx_cycle_t *cycle, ngx_listening_t *ls)
     ngx_bpf_program_link(&ngx_quic_reuseport_helper,
                          "ngx_quic_sockmap", grp->map_fd);
 
+    grp->map_active_fd = ngx_bpf_map_create(cycle->log, BPF_MAP_TYPE_SOCKHASH,
+                                     sizeof(uint32_t), sizeof(uint64_t),
+                                     NGX_QUIC_BPF_ACTIVE_KEYS_MAX, 0);
+    if (grp->map_active_fd == -1) {
+        goto failed;
+    }
+
+    flags = fcntl(grp->map_active_fd, F_GETFD);
+    if (flags == -1) {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, errno,
+                      "quic bpf getfd failed");
+        goto failed;
+    }
+
+    /* need to inherit map during binary upgrade after exec */
+    flags &= ~FD_CLOEXEC;
+
+    rc = fcntl(grp->map_active_fd, F_SETFD, flags);
+    if (rc == -1) {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, errno,
+                      "quic bpf setfd failed");
+        goto failed;
+    }
+
+    ngx_bpf_program_link(&ngx_quic_reuseport_helper,
+                         "ngx_quic_sockmap_active", grp->map_active_fd);
+
     progfd = ngx_bpf_load_program(cycle->log, &ngx_quic_reuseport_helper);
     if (progfd < 0) {
         goto failed;
@@ -352,6 +392,10 @@ failed:
 
     if (grp->map_fd != -1) {
         ngx_quic_bpf_close(cycle->log, grp->map_fd, "map");
+    }
+
+    if (grp->map_active_fd != -1) {
+        ngx_quic_bpf_close(cycle->log, grp->map_active_fd, "map_active");
     }
 
     ngx_queue_remove(&grp->queue);
@@ -399,6 +443,16 @@ ngx_quic_bpf_get_group(ngx_cycle_t *cycle, ngx_listening_t *ls)
         return NULL;
     }
 
+    grp->map_active_fd = dup(ogrp->map_active_fd);
+    if (grp->map_active_fd == -1) {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
+                      "quic bpf failed to duplicate bpf map_active descriptor");
+
+        ngx_queue_remove(&grp->queue);
+
+        return NULL;
+    }
+
     ngx_log_debug2(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
                    "quic bpf sockmap fd duplicated old:%d new:%d",
                    ogrp->map_fd, grp->map_fd);
@@ -413,9 +467,11 @@ ngx_quic_bpf_group_add_socket(ngx_cycle_t *cycle,  ngx_listening_t *ls)
     uint64_t                cookie;
     ngx_quic_bpf_conf_t    *bcf;
     ngx_quic_sock_group_t  *grp;
+    ngx_core_conf_t        *ccf;
+    ngx_uint_t              i;
 
+    ccf = ngx_core_get_conf(cycle);
     bcf = ngx_quic_bpf_get_conf(cycle);
-
     grp = ngx_quic_bpf_get_group(cycle, ls);
 
     if (grp == NULL) {
@@ -438,6 +494,14 @@ ngx_quic_bpf_group_add_socket(ngx_cycle_t *cycle,  ngx_listening_t *ls)
         ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
                       "quic bpf failed to update socket map key=%xL", cookie);
         return NGX_ERROR;
+    }
+
+    for (i = ls->worker; i < NGX_QUIC_BPF_ACTIVE_KEYS_MAX; i += ccf->worker_processes) {
+        if (ngx_bpf_map_update(grp->map_active_fd, &i, &ls->fd, BPF_ANY) == -1) {
+            ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
+                            "quic bpf failed to update socket map_active key=%d", i);
+            return NGX_ERROR;
+        }
     }
 
     ngx_log_debug4(NGX_LOG_DEBUG_EVENT, cycle->log, 0,
@@ -502,6 +566,7 @@ ngx_quic_bpf_export_maps(ngx_cycle_t *cycle)
              */
 
             ngx_quic_bpf_close(cycle->log, grp->map_fd, "map");
+            ngx_quic_bpf_close(cycle->log, grp->map_active_fd, "map_active");
             ngx_queue_remove(&grp->queue);
 
             continue;
@@ -526,7 +591,7 @@ ngx_quic_bpf_export_maps(ngx_cycle_t *cycle)
     {
         grp = ngx_queue_data(q, ngx_quic_sock_group_t, queue);
 
-        p = ngx_sprintf(p, "%ud", grp->map_fd);
+        p = ngx_sprintf(p, "%ud%c%ud", grp->map_active_fd, NGX_QUIC_BPF_FDSEP, grp->map_fd);
 
         *p++ = NGX_QUIC_BPF_ADDRSEP;
 
@@ -553,7 +618,7 @@ ngx_quic_bpf_export_maps(ngx_cycle_t *cycle)
 static ngx_int_t
 ngx_quic_bpf_import_maps(ngx_cycle_t *cycle)
 {
-    int                     s;
+    int                     s, sa;
     u_char                 *inherited, *p, *v;
     ngx_uint_t              in_fd;
     ngx_addr_t              tmp;
@@ -570,6 +635,7 @@ ngx_quic_bpf_import_maps(ngx_cycle_t *cycle)
 
 #if (NGX_SUPPRESS_WARN)
     s = -1;
+    sa = -1;
 #endif
 
     in_fd = 1;
@@ -577,6 +643,24 @@ ngx_quic_bpf_import_maps(ngx_cycle_t *cycle)
     for (p = inherited, v = p; *p; p++) {
 
         switch (*p) {
+
+        case NGX_QUIC_BPF_FDSEP:
+
+            if (!in_fd) {
+                ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                              "quic bpf failed to parse inherited env");
+                return NGX_ERROR;
+            }
+
+            sa = ngx_atoi(v, p - v);
+            if (sa == NGX_ERROR) {
+                ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                              "quic bpf failed to parse inherited map fd");
+                return NGX_ERROR;
+            }
+
+            v = p + 1;
+            break;
 
         case NGX_QUIC_BPF_ADDRSEP:
 
@@ -613,6 +697,7 @@ ngx_quic_bpf_import_maps(ngx_cycle_t *cycle)
             }
 
             grp->map_fd = s;
+            grp->map_active_fd = sa;
 
             if (ngx_parse_addr_port(cycle->pool, &tmp, v, p - v)
                 != NGX_OK)
@@ -622,6 +707,7 @@ ngx_quic_bpf_import_maps(ngx_cycle_t *cycle)
                               " address '%*s'", p - v , v);
 
                 ngx_quic_bpf_close(cycle->log, s, "inherited map");
+                ngx_quic_bpf_close(cycle->log, sa, "inherited active_map");
 
                 return NGX_ERROR;
             }

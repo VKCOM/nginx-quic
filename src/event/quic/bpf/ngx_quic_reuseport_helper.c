@@ -40,8 +40,9 @@ char _license[] SEC("license") = LICENSE;
 
 /*****************************************************************************/
 
-#define NGX_QUIC_PKT_LONG        0x80  /* header form */
-#define NGX_QUIC_SERVER_CID_LEN  20
+#define NGX_QUIC_PKT_LONG              0x80  /* header form */
+#define NGX_QUIC_SERVER_CID_LEN        20
+#define NGX_QUIC_BPF_ACTIVE_KEYS_MAX   256
 
 
 #define advance_data(nbytes)                                                  \
@@ -68,6 +69,7 @@ char _license[] SEC("license") = LICENSE;
  * all pointers to this variable are replaced by the bpf loader
  */
 struct bpf_map_def SEC("maps") ngx_quic_sockmap;
+struct bpf_map_def SEC("maps") ngx_quic_sockmap_active;
 
 
 SEC(PROGNAME)
@@ -94,7 +96,7 @@ int ngx_quic_select_socket_by_dcid(struct sk_reuseport_md *ctx)
 
         if (len < 8) {
             /* it's useless to search for key in such short DCID */
-            return SK_PASS;
+            goto failed;
         }
 
     } else {
@@ -122,7 +124,7 @@ int ngx_quic_select_socket_by_dcid(struct sk_reuseport_md *ctx)
     case -ENOENT:
         debugmsg("nginx quic default route for key 0x%llx", key);
         /* let the default reuseport logic decide which socket to choose */
-        return SK_PASS;
+        goto failed;
 
     default:
         debugmsg("nginx quic bpf_sk_select_reuseport err: %d key 0x%llx",
@@ -131,6 +133,23 @@ int ngx_quic_select_socket_by_dcid(struct sk_reuseport_md *ctx)
     }
 
 failed:
+    key = ctx->hash % NGX_QUIC_BPF_ACTIVE_KEYS_MAX;
+    rc = bpf_sk_select_reuseport(ctx, &ngx_quic_sockmap_active, &key, 0);
+
+    switch (rc) {
+    case 0:
+        debugmsg("nginx quic socket selected active socket");
+        break;
+
+    case -ENOENT:
+        debugmsg("nginx quic default route (failed with active socket)");
+        break;
+
+    default:
+        debugmsg("nginx quic bpf_sk_select_reuseport err active socket: %d", rc);
+        break;
+    }
+
     /*
      * SK_DROP will generate ICMP, but we may want to process "invalid" packet
      * in userspace quic to investigate further and finally react properly

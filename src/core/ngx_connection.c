@@ -649,6 +649,23 @@ ngx_open_listening_sockets(ngx_cycle_t *cycle)
             }
 #endif
 
+            if (ls[i].quic) {
+                if (fcntl(s, F_SETFD, FD_CLOEXEC) == -1) {
+                    ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
+                                    "fcntl(FD_CLOEXEC) \"%s\" failed", &ls[i].addr_text);
+
+                    if (ngx_close_socket(s) == -1) {
+                        ngx_log_error(NGX_LOG_EMERG, log, ngx_socket_errno,
+                                      ngx_close_socket_n " %V failed",
+                                      &ls[i].addr_text);
+                    }
+
+                    if (!ngx_test_config) {
+                        failed = 1;
+                    }
+                }
+            }
+
             if (ls[i].type != SOCK_STREAM) {
                 ls[i].fd = s;
                 continue;
