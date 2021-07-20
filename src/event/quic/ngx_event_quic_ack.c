@@ -48,6 +48,7 @@ static void ngx_quic_persistent_congestion(ngx_connection_t *c);
 static void ngx_quic_congestion_lost(ngx_connection_t *c,
     ngx_quic_frame_t *frame);
 static void ngx_quic_lost_handler(ngx_event_t *ev);
+static ngx_int_t ngx_quic_is_blocked(ngx_connection_t *c);
 
 
 ngx_int_t
@@ -264,7 +265,7 @@ ngx_quic_handle_ack_frame_range(ngx_connection_t *c, ngx_quic_send_ctx_t *ctx,
             st->newest = f->last;
         }
 
-        ngx_queue_remove(&f->queue);
+        ngx_quic_queue_frame_remove(qc, &ctx->sent, f);
         ngx_quic_free_frame(c, f);
         found = 1;
     }
@@ -296,6 +297,33 @@ ngx_quic_handle_ack_frame_range(ngx_connection_t *c, ngx_quic_send_ctx_t *ctx,
 }
 
 
+static ngx_int_t
+ngx_quic_is_blocked(ngx_connection_t *c)
+{
+    ngx_quic_send_ctx_t    *ctx;
+    ngx_quic_congestion_t  *cg;
+    ngx_quic_connection_t  *qc;
+    ngx_uint_t              i;
+
+    qc = ngx_quic_get_connection(c);
+    cg = &qc->congestion;
+
+    for (i = 0; i < NGX_QUIC_SEND_CTX_LAST; i++) {
+        ctx = &qc->send_ctx[i];
+
+        if (ctx->last_priority) {
+            return 0;
+        }
+    }
+
+    if (cg->in_flight < cg->window) {
+        return 0;
+    }
+
+    return 1;
+}
+
+
 void
 ngx_quic_congestion_ack(ngx_connection_t *c, ngx_quic_frame_t *f)
 {
@@ -311,7 +339,7 @@ ngx_quic_congestion_ack(ngx_connection_t *c, ngx_quic_frame_t *f)
     qc = ngx_quic_get_connection(c);
     cg = &qc->congestion;
 
-    blocked = (cg->in_flight >= cg->window) ? 1 : 0;
+    blocked = ngx_quic_is_blocked(c);
 
     cg->in_flight -= f->plen;
 
@@ -350,7 +378,7 @@ ngx_quic_congestion_ack(ngx_connection_t *c, ngx_quic_frame_t *f)
 
 done:
 
-    if (blocked && cg->in_flight < cg->window) {
+    if (blocked && !ngx_quic_is_blocked(c)) {
         ngx_post_event(&qc->push, &ngx_posted_events);
     }
 }
@@ -567,7 +595,7 @@ ngx_quic_resend_frames(ngx_connection_t *c, ngx_quic_send_ctx_t *ctx)
 
         q = ngx_queue_next(q);
 
-        ngx_queue_remove(&f->queue);
+        ngx_quic_queue_frame_remove(qc, &ctx->sent, f);
 
         switch (f->type) {
         case NGX_QUIC_FT_ACK:
@@ -588,7 +616,7 @@ ngx_quic_resend_frames(ngx_connection_t *c, ngx_quic_send_ctx_t *ctx)
 
         case NGX_QUIC_FT_MAX_DATA:
             f->u.max_data.max_data = qc->streams.recv_max_data;
-            ngx_quic_queue_frame(qc, f);
+            ngx_quic_queue_frame_priority(qc, f, 1);
             break;
 
         case NGX_QUIC_FT_MAX_STREAMS:
@@ -596,7 +624,7 @@ ngx_quic_resend_frames(ngx_connection_t *c, ngx_quic_send_ctx_t *ctx)
             f->u.max_streams.limit = f->u.max_streams.bidi
                                      ? qc->streams.client_max_streams_bidi
                                      : qc->streams.client_max_streams_uni;
-            ngx_quic_queue_frame(qc, f);
+            ngx_quic_queue_frame_priority(qc, f, 1);
             break;
 
         case NGX_QUIC_FT_MAX_STREAM_DATA:
@@ -608,7 +636,7 @@ ngx_quic_resend_frames(ngx_connection_t *c, ngx_quic_send_ctx_t *ctx)
             }
 
             f->u.max_stream_data.limit = qs->recv_max_data;
-            ngx_quic_queue_frame(qc, f);
+            ngx_quic_queue_frame_priority(qc, f, 1);
             break;
 
         case NGX_QUIC_FT_STREAM:
@@ -623,7 +651,7 @@ ngx_quic_resend_frames(ngx_connection_t *c, ngx_quic_send_ctx_t *ctx)
             /* fall through */
 
         default:
-            ngx_queue_insert_tail(&ctx->frames, &f->queue);
+            ngx_quic_queue_frame_priority(qc, f, 0);
         }
 
     } while (q != ngx_queue_sentinel(&ctx->sent));
@@ -651,7 +679,7 @@ ngx_quic_congestion_lost(ngx_connection_t *c, ngx_quic_frame_t *f)
     qc = ngx_quic_get_connection(c);
     cg = &qc->congestion;
 
-    blocked = (cg->in_flight >= cg->window) ? 1 : 0;
+    blocked =  ngx_quic_is_blocked(c);
 
     cg->in_flight -= f->plen;
     f->plen = 0;
@@ -685,7 +713,7 @@ ngx_quic_congestion_lost(ngx_connection_t *c, ngx_quic_frame_t *f)
 
 done:
 
-    if (blocked && cg->in_flight < cg->window) {
+    if (blocked && !ngx_quic_is_blocked(c)) {
         ngx_post_event(&qc->push, &ngx_posted_events);
     }
 }
@@ -863,7 +891,7 @@ ngx_quic_pto_handler(ngx_event_t *ev)
             f = ngx_queue_data(q, ngx_quic_frame_t, queue);
 
             if (f->type == NGX_QUIC_FT_PING) {
-                ngx_queue_remove(q);
+                ngx_quic_queue_frame_remove(qc, &ctx->frames, f);
                 ngx_quic_free_frame(c, f);
             }
 
@@ -879,7 +907,7 @@ ngx_quic_pto_handler(ngx_event_t *ev)
 
             if (f->type == NGX_QUIC_FT_PING) {
                 ngx_quic_congestion_lost(c, f);
-                ngx_queue_remove(q);
+                ngx_quic_queue_frame_remove(qc, &ctx->sent, f);
                 ngx_quic_free_frame(c, f);
             }
 
@@ -896,8 +924,9 @@ ngx_quic_pto_handler(ngx_event_t *ev)
         f->level = ctx->level;
         f->type = NGX_QUIC_FT_PING;
         f->flush = 1;
+        f->need_ack = 1;
 
-        ngx_quic_queue_frame(qc, f);
+        ngx_quic_queue_frame_priority(qc, f, 1);
 
         f = ngx_quic_alloc_frame(c);
         if (f == NULL) {
@@ -906,8 +935,10 @@ ngx_quic_pto_handler(ngx_event_t *ev)
 
         f->level = ctx->level;
         f->type = NGX_QUIC_FT_PING;
+        f->flush = 1;
+        f->need_ack = 1;
 
-        ngx_quic_queue_frame(qc, f);
+        ngx_quic_queue_frame_priority(qc, f, 1);
     }
 
     qc->pto_count++;

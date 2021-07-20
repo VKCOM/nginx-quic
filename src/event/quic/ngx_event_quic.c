@@ -1051,18 +1051,20 @@ ngx_quic_discard_ctx(ngx_connection_t *c, enum ssl_encryption_level_t level)
 
     while (!ngx_queue_empty(&ctx->sent)) {
         q = ngx_queue_head(&ctx->sent);
-        ngx_queue_remove(q);
-
         f = ngx_queue_data(q, ngx_quic_frame_t, queue);
+
+        ngx_quic_queue_frame_remove(qc, &ctx->sent, f);
+
         ngx_quic_congestion_ack(c, f);
         ngx_quic_free_frame(c, f);
     }
 
     while (!ngx_queue_empty(&ctx->frames)) {
         q = ngx_queue_head(&ctx->frames);
-        ngx_queue_remove(q);
-
         f = ngx_queue_data(q, ngx_quic_frame_t, queue);
+
+        ngx_quic_queue_frame_remove(qc, &ctx->frames, f);
+
         ngx_quic_congestion_ack(c, f);
         ngx_quic_free_frame(c, f);
     }

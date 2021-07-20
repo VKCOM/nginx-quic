@@ -170,6 +170,8 @@ struct ngx_quic_send_ctx_s {
     ngx_queue_t                       sending;     /* frames assigned to pkt */
     ngx_queue_t                       sent;        /* frames waiting ACK */
 
+    ngx_quic_frame_t                 *last_priority;
+
     uint64_t                          pending_ack; /* non sent ack-eliciting */
     uint64_t                          largest_range;
     uint64_t                          first_range;

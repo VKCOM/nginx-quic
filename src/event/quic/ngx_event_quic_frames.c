@@ -152,6 +152,9 @@ ngx_quic_free_frames(ngx_connection_t *c, ngx_queue_t *frames)
     ngx_queue_t       *q;
     ngx_quic_frame_t  *f;
 
+    ngx_quic_connection_t  *qc;
+    qc = ngx_quic_get_connection(c);
+
     do {
         q = ngx_queue_head(frames);
 
@@ -159,26 +162,23 @@ ngx_quic_free_frames(ngx_connection_t *c, ngx_queue_t *frames)
             break;
         }
 
-        ngx_queue_remove(q);
-
         f = ngx_queue_data(q, ngx_quic_frame_t, queue);
+        ngx_quic_queue_frame_remove(qc, frames, f);
 
         ngx_quic_free_frame(c, f);
     } while (1);
 }
 
 
-void
-ngx_quic_queue_frame(ngx_quic_connection_t *qc, ngx_quic_frame_t *frame)
+static void
+ngx_quic_queue_frame_after(ngx_quic_connection_t *qc, ngx_quic_frame_t *frame, ngx_queue_t *queue, ngx_int_t create)
 {
-    ngx_quic_send_ctx_t  *ctx;
+    if (create) {
+        frame->len = ngx_quic_create_frame(NULL, frame);
+        /* always succeeds */
+    }
 
-    ctx = ngx_quic_get_send_ctx(qc, frame->level);
-
-    ngx_queue_insert_tail(&ctx->frames, &frame->queue);
-
-    frame->len = ngx_quic_create_frame(NULL, frame);
-    /* always succeeds */
+    ngx_queue_insert_after(queue, &frame->queue);
 
     if (qc->closing) {
         return;
@@ -188,12 +188,65 @@ ngx_quic_queue_frame(ngx_quic_connection_t *qc, ngx_quic_frame_t *frame)
 }
 
 
+void
+ngx_quic_queue_frame(ngx_quic_connection_t *qc, ngx_quic_frame_t *frame)
+{
+    ngx_quic_send_ctx_t  *ctx;
+    ctx = ngx_quic_get_send_ctx(qc, frame->level);
+
+    ngx_quic_queue_frame_after(qc, frame, ngx_queue_last(&ctx->frames), 1);
+}
+
+
+void
+ngx_quic_queue_frame_priority(ngx_quic_connection_t *qc, ngx_quic_frame_t *frame, ngx_int_t create)
+{
+    ngx_quic_send_ctx_t  *ctx;
+    ctx = ngx_quic_get_send_ctx(qc, frame->level);
+
+    if (ctx->last_priority) {
+        ngx_quic_queue_frame_after(qc, frame, &ctx->last_priority->queue, create);
+    } else {
+        ngx_quic_queue_frame_after(qc, frame, &ctx->frames, create);
+    }
+
+    ctx->last_priority = frame;
+}
+
+
+void
+ngx_quic_queue_frame_remove(ngx_quic_connection_t *qc, ngx_queue_t *queue, ngx_quic_frame_t *frame)
+{
+    ngx_quic_send_ctx_t  *ctx;
+    ngx_queue_t          *prev;
+
+    ctx = ngx_quic_get_send_ctx(qc, frame->level);
+
+    if (&ctx->frames == queue && ctx->last_priority == frame) {
+        prev = ngx_queue_prev(&frame->queue);
+
+        if (prev != ngx_queue_sentinel(&ctx->frames)) {
+            ctx->last_priority = ngx_queue_data(prev, ngx_quic_frame_t, queue);
+        } else {
+            ctx->last_priority = NULL;
+        }
+    }
+
+    ngx_queue_remove(&frame->queue);
+}
+
+
 ngx_int_t
 ngx_quic_split_frame(ngx_connection_t *c, ngx_quic_frame_t *f, size_t len)
 {
     size_t                     shrink;
     ngx_quic_frame_t          *nf;
     ngx_quic_ordered_frame_t  *of, *onf;
+    ngx_quic_send_ctx_t       *ctx;
+    ngx_quic_connection_t      *qc;
+
+    qc = ngx_quic_get_connection(c);
+    ctx = ngx_quic_get_send_ctx(qc, f->level);
 
     switch (f->type) {
     case NGX_QUIC_FT_CRYPTO:
@@ -245,6 +298,10 @@ ngx_quic_split_frame(ngx_connection_t *c, ngx_quic_frame_t *f, size_t len)
     }
 
     ngx_queue_insert_after(&f->queue, &nf->queue);
+
+    if (ctx->last_priority == f) {
+        ctx->last_priority = nf;
+    }
 
     return NGX_OK;
 }
