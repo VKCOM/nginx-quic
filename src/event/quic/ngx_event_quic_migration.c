@@ -21,6 +21,35 @@ static ngx_quic_path_t *ngx_quic_alloc_path(ngx_connection_t *c);
 
 
 ngx_int_t
+ngx_quic_send_path_cc(ngx_connection_t *c, struct sockaddr *sockaddr, socklen_t socklen)
+{
+    ssize_t                 sent;
+    ngx_quic_frame_t        frame;
+    ngx_quic_connection_t  *qc;
+
+    ngx_log_debug0(NGX_LOG_DEBUG_EVENT, c->log, 0,
+                   "quic path send close connection");
+
+    ngx_memzero(&frame, sizeof(ngx_quic_frame_t));
+
+    qc = ngx_quic_get_connection(c);
+
+    frame.level = qc->error_level;
+    frame.type = NGX_QUIC_FT_CONNECTION_CLOSE;
+    frame.u.close.error_code = NGX_QUIC_ERR_NO_ERROR;
+
+    frame.u.close.reason.len = sizeof("Migration disabled") - 1;
+    frame.u.close.reason.data = (u_char *) "Migration disabled";
+
+    sent = ngx_quic_frame_sendto(c, &frame, 0, sockaddr, socklen);
+    if (sent == -1) {
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
+
+ngx_int_t
 ngx_quic_handle_path_challenge_frame(ngx_connection_t *c,
     ngx_quic_path_challenge_frame_t *f)
 {
@@ -300,6 +329,11 @@ ngx_quic_check_migration(ngx_connection_t *c, ngx_quic_header_t *pkt)
             ngx_log_debug0(NGX_LOG_DEBUG_EVENT, c->log, 0,
                            "quic migration disabled, dropping packet "
                            "from unknown path");
+
+            if (qc->conf->migration_close_connection) {
+                ngx_quic_send_path_cc(c, c->udp->dgram->sockaddr, c->udp->dgram->socklen);
+            }
+
             return NGX_DECLINED;
         }
 

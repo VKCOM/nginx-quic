@@ -41,4 +41,6 @@ ngx_int_t ngx_quic_handle_migration(ngx_connection_t *c,
 
 void ngx_quic_path_validation_handler(ngx_event_t *ev);
 
+ngx_int_t ngx_quic_send_path_cc(ngx_connection_t *c, struct sockaddr *sockaddr, socklen_t socklen);
+
 #endif /* _NGX_EVENT_QUIC_MIGRATION_H_INCLUDED_ */
