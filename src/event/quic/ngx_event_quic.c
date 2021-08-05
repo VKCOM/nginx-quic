@@ -428,7 +428,7 @@ ngx_quic_input_handler(ngx_event_t *rev)
             ngx_quic_close_connection(c, NGX_OK);
 
         } else if (qc->shutdown) {
-            ngx_quic_shutdown_quic(c);
+            ngx_quic_shutdown_quic(c, qc->shutdown_rc);
         }
 
         return;
@@ -622,7 +622,7 @@ ngx_quic_close_quic(ngx_connection_t *c, ngx_int_t rc)
 
 
 void
-ngx_quic_finalize_connection(ngx_connection_t *c, ngx_uint_t err,
+ngx_quic_finalize_connection(ngx_connection_t *c, ngx_int_t rc, ngx_uint_t err,
     const char *reason)
 {
     ngx_quic_connection_t  *qc;
@@ -633,22 +633,23 @@ ngx_quic_finalize_connection(ngx_connection_t *c, ngx_uint_t err,
     qc->error_app = 1;
     qc->error_ftype = 0;
 
-    ngx_quic_close_connection(c, NGX_ERROR);
+    ngx_quic_close_connection(c, rc);
 }
 
 
 void
-ngx_quic_shutdown_connection(ngx_connection_t *c, ngx_uint_t err,
+ngx_quic_shutdown_connection(ngx_connection_t *c, ngx_int_t rc, ngx_uint_t err,
     const char *reason)
 {
     ngx_quic_connection_t  *qc;
 
     qc = ngx_quic_get_connection(c);
     qc->shutdown = 1;
+    qc->shutdown_rc = rc;
     qc->shutdown_code = err;
     qc->shutdown_reason = reason;
 
-    ngx_quic_shutdown_quic(c);
+    ngx_quic_shutdown_quic(c, rc);
 }
 
 
@@ -1392,7 +1393,7 @@ ngx_quic_push_handler(ngx_event_t *ev)
 
 
 void
-ngx_quic_shutdown_quic(ngx_connection_t *c)
+ngx_quic_shutdown_quic(ngx_connection_t *c, ngx_int_t rc)
 {
     ngx_rbtree_t           *tree;
     ngx_rbtree_node_t      *node;
@@ -1420,7 +1421,7 @@ ngx_quic_shutdown_quic(ngx_connection_t *c)
         }
     }
 
-    ngx_quic_finalize_connection(c, qc->shutdown_code, qc->shutdown_reason);
+    ngx_quic_finalize_connection(c, rc, qc->shutdown_code, qc->shutdown_reason);
 }
 
 

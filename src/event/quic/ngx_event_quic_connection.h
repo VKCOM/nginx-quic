@@ -243,6 +243,7 @@ struct ngx_quic_connection_s {
     const char                       *error_reason;
 
     ngx_uint_t                        shutdown_code;
+    ngx_int_t                         shutdown_rc;
     const char                       *shutdown_reason;
 
     unsigned                          error_app:1;
@@ -260,7 +261,7 @@ ngx_int_t ngx_quic_apply_transport_params(ngx_connection_t *c,
 void ngx_quic_discard_ctx(ngx_connection_t *c,
     enum ssl_encryption_level_t level);
 void ngx_quic_close_connection(ngx_connection_t *c, ngx_int_t rc);
-void ngx_quic_shutdown_quic(ngx_connection_t *c);
+void ngx_quic_shutdown_quic(ngx_connection_t *c, ngx_int_t rc);
 
 #if (NGX_DEBUG)
 void ngx_quic_connstate_dbg(ngx_connection_t *c);
