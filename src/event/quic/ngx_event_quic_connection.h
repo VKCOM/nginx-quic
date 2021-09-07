@@ -37,6 +37,10 @@ typedef struct ngx_quic_keys_s        ngx_quic_keys_t;
 #include <ngx_event_quic_output.h>
 #include <ngx_event_quic_socket.h>
 
+#if (NGX_HAVE_IP_MTU_DISCOVER)
+#include <ngx_event_quic_mtu.h>
+#endif
+
 
 /* RFC 9002, 6.2.2.  Handshakes and New Paths: kInitialRtt */
 #define NGX_QUIC_INITIAL_RTT                 333 /* ms */
@@ -183,11 +187,34 @@ struct ngx_quic_send_ctx_s {
 };
 
 
+#if (NGX_HAVE_IP_MTU_DISCOVER)
+typedef struct {
+    size_t                            min_probe_length;
+    size_t                            max_probe_length;
+    size_t                            last_probe_length;
+
+    ngx_int_t                         remaining_probe_count;
+
+    /* The number of packets between MTU probes. */
+    uint64_t                          packets_between_probes;
+
+    /* The packet number of the packet after which the next MTU probe will be sent. */
+    uint64_t                          next_probe_at;
+
+    unsigned                          process:1;
+} ngx_quic_mtu_t;
+#endif
+
+
 struct ngx_quic_connection_s {
     uint32_t                          version;
 
     ngx_quic_socket_t                *socket;
     ngx_quic_socket_t                *backup;
+
+#if (NGX_HAVE_IP_MTU_DISCOVER)
+    ngx_quic_mtu_t                    mtu;
+#endif
 
     ngx_queue_t                       sockets;
     ngx_queue_t                       paths;

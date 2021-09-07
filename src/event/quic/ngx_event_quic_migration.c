@@ -81,7 +81,7 @@ ngx_quic_handle_path_challenge_frame(ngx_connection_t *c,
      */
     max = path->received * 3;
     max = (path->sent >= max) ? 0 : max - path->sent;
-    pad = ngx_min(1200, max);
+    pad = ngx_min(NGX_QUIC_MIN_INITIAL_SIZE, max);
 
     sent = ngx_quic_frame_sendto(c, &frame, pad, path->sockaddr, path->socklen);
     if (sent < 0) {
@@ -642,7 +642,7 @@ ngx_quic_send_path_challenge(ngx_connection_t *c, ngx_quic_path_t *path)
 
     max = path->received * 3;
     max = (path->sent >= max) ? 0 : max - path->sent;
-    pad = ngx_min(1200, max);
+    pad = ngx_min(NGX_QUIC_MIN_INITIAL_SIZE, max);
 
     sent = ngx_quic_frame_sendto(c, &frame, pad, path->sockaddr, path->socklen);
     if (sent < 0) {
@@ -654,7 +654,7 @@ ngx_quic_send_path_challenge(ngx_connection_t *c, ngx_quic_path_t *path)
     ngx_memcpy(frame.u.path_challenge.data, path->challenge2, 8);
 
     max = (path->sent >= max) ? 0 : max - path->sent;
-    pad = ngx_min(1200, max);
+    pad = ngx_min(NGX_QUIC_MIN_INITIAL_SIZE, max);
 
     sent = ngx_quic_frame_sendto(c, &frame, pad, path->sockaddr, path->socklen);
     if (sent < 0) {

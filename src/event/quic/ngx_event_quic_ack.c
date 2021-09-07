@@ -336,6 +336,13 @@ ngx_quic_congestion_ack(ngx_connection_t *c, ngx_quic_frame_t *f)
         return;
     }
 
+#if (NGX_HAVE_IP_MTU_DISCOVER)
+    if (f->probe) {
+        ngx_quic_mtu_ack(c, f);
+        return;
+    }
+#endif
+
     qc = ngx_quic_get_connection(c);
     cg = &qc->congestion;
 
@@ -675,6 +682,13 @@ ngx_quic_congestion_lost(ngx_connection_t *c, ngx_quic_frame_t *f)
     if (f->plen == 0) {
         return;
     }
+
+#if (NGX_HAVE_IP_MTU_DISCOVER)
+    if (f->probe) {
+        ngx_quic_mtu_lost(c, f);
+        return;
+    }
+#endif
 
     qc = ngx_quic_get_connection(c);
     cg = &qc->congestion;

@@ -304,6 +304,14 @@ ngx_quic_new_connection(ngx_connection_t *c, ngx_quic_conf_t *conf,
     ctp->max_ack_delay = NGX_QUIC_DEFAULT_MAX_ACK_DELAY;
     ctp->active_connection_id_limit = 2;
 
+#if (NGX_HAVE_IP_MTU_DISCOVER)
+    qc->mtu.min_probe_length = ctp->max_udp_payload_size;
+    qc->mtu.max_probe_length = qc->conf->mtu_target;
+    qc->mtu.remaining_probe_count = qc->conf->mtu_attemts;
+    qc->mtu.packets_between_probes = 100;
+    qc->mtu.next_probe_at = qc->mtu.packets_between_probes;
+#endif
+
     ngx_queue_init(&qc->streams.uninitialized);
 
     qc->streams.recv_max_data = qc->tp.initial_max_data;
@@ -1439,3 +1447,24 @@ ngx_quic_version(ngx_connection_t *c)
 
     return (version & 0xff000000) == 0xff000000 ? version & 0xff : version;
 }
+
+
+#if (NGX_HAVE_IP_MTU_DISCOVER)
+size_t
+ngx_quic_mtu(ngx_connection_t *c)
+{
+    ngx_quic_connection_t  *qc;
+    ngx_quic_stream_t      *qs;
+    ngx_connection_t       *pc;
+
+    if (c->quic == NULL) {
+        return (size_t) NGX_ERROR;
+    }
+
+    qs = c->quic;
+    pc = qs->parent;
+    qc = ngx_quic_get_connection(pc);
+
+    return qc->ctp.max_udp_payload_size;
+}
+#endif

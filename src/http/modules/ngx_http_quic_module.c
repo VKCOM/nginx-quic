@@ -12,6 +12,10 @@
 
 static ngx_int_t ngx_http_variable_quic(ngx_http_request_t *r,
     ngx_http_variable_value_t *v, uintptr_t data);
+#if (NGX_HAVE_IP_MTU_DISCOVER)
+static ngx_int_t ngx_http_variable_quic_mtu(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, uintptr_t data);
+#endif
 static ngx_int_t ngx_http_quic_add_variables(ngx_conf_t *cf);
 static void *ngx_http_quic_create_srv_conf(ngx_conf_t *cf);
 static char *ngx_http_quic_merge_srv_conf(ngx_conf_t *cf, void *parent,
@@ -168,6 +172,29 @@ static ngx_command_t  ngx_http_quic_commands[] = {
       0,
       NULL },
 
+#if (NGX_HAVE_IP_MTU_DISCOVER)
+    { ngx_string("quic_mtu_discovery"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_FLAG,
+      ngx_conf_set_flag_slot,
+      NGX_HTTP_SRV_CONF_OFFSET,
+      offsetof(ngx_quic_conf_t, mtu),
+      NULL },
+
+    { ngx_string("quic_mtu_discovery_attemts"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_num_slot,
+      NGX_HTTP_SRV_CONF_OFFSET,
+      offsetof(ngx_quic_conf_t, mtu_attemts),
+      NULL },
+
+    { ngx_string("quic_mtu_discovery_target"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_num_slot,
+      NGX_HTTP_SRV_CONF_OFFSET,
+      offsetof(ngx_quic_conf_t, mtu_target),
+      NULL },
+#endif
+
       ngx_null_command
 };
 
@@ -206,6 +233,10 @@ ngx_module_t  ngx_http_quic_module = {
 static ngx_http_variable_t  ngx_http_quic_vars[] = {
 
     { ngx_string("quic"), NULL, ngx_http_variable_quic, 0, 0, 0 },
+
+#if (NGX_HAVE_IP_MTU_DISCOVER)
+    { ngx_string("quic_mtu"), NULL, ngx_http_variable_quic_mtu, 0, 0, 0 },
+#endif
 
       ngx_http_null_variable
 };
@@ -305,6 +336,37 @@ ngx_http_variable_quic(ngx_http_request_t *r,
 }
 
 
+#if (NGX_HAVE_IP_MTU_DISCOVER)
+static ngx_int_t
+ngx_http_variable_quic_mtu(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, uintptr_t data)
+{
+    size_t  mtu;
+
+    if (r->connection->quic) {
+        mtu = ngx_quic_mtu(r->connection);
+
+        v->data = ngx_pnalloc(r->pool, NGX_SIZE_T_LEN);
+        if (v->data == NULL) {
+            return NGX_ERROR;
+        }
+
+        v->len = ngx_sprintf(v->data, "%z", mtu) - v->data;
+
+        v->valid = 1;
+        v->no_cacheable = 1;
+        v->not_found = 0;
+
+        return NGX_OK;
+    }
+
+    v->not_found = 1;
+
+    return NGX_OK;
+}
+#endif
+
+
 static ngx_int_t
 ngx_http_quic_add_variables(ngx_conf_t *cf)
 {
@@ -366,6 +428,12 @@ ngx_http_quic_create_srv_conf(ngx_conf_t *cf)
     conf->gso_enabled = NGX_CONF_UNSET;
     conf->migration_close_connection = NGX_CONF_UNSET;
     conf->require_alpn = 1;
+
+#if (NGX_HAVE_IP_MTU_DISCOVER)
+    conf->mtu = NGX_CONF_UNSET;
+    conf->mtu_attemts = NGX_CONF_UNSET;
+    conf->mtu_target = NGX_CONF_UNSET_SIZE;
+#endif
 
     return conf;
 }
@@ -434,6 +502,12 @@ ngx_http_quic_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_conf_merge_value(conf->migration_close_connection, prev->migration_close_connection, 0);
 
     ngx_conf_merge_str_value(conf->host_key, prev->host_key, "");
+
+#if (NGX_HAVE_IP_MTU_DISCOVER)
+    ngx_conf_merge_value(conf->mtu, prev->mtu, 0);
+    ngx_conf_merge_size_value(conf->mtu_target, prev->mtu_target, 1472);
+    ngx_conf_merge_value(conf->mtu_attemts, prev->mtu_attemts, 8);
+#endif
 
     if (conf->migration_close_connection && !conf->tp.disable_active_migration) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,

@@ -22,7 +22,7 @@
 
 #define NGX_QUIC_SR_TOKEN_LEN                16
 
-#define NGX_QUIC_MIN_INITIAL_SIZE            1200
+#define NGX_QUIC_MIN_INITIAL_SIZE            1100
 
 #define NGX_QUIC_STREAM_SERVER_INITIATED     0x01
 #define NGX_QUIC_STREAM_UNIDIRECTIONAL       0x02
@@ -68,6 +68,12 @@ typedef struct {
     size_t                     min_window;
     u_char                     av_token_key[NGX_QUIC_AV_KEY_LEN];
     u_char                     sr_token_key[NGX_QUIC_SR_KEY_LEN];
+
+#if (NGX_HAVE_IP_MTU_DISCOVER)
+    ngx_flag_t                 mtu;
+    ngx_int_t                  mtu_attemts;
+    size_t                     mtu_target;
+#endif
 } ngx_quic_conf_t;
 
 
@@ -103,5 +109,9 @@ ngx_int_t ngx_quic_derive_key(ngx_log_t *log, const char *label,
     ngx_str_t *secret, ngx_str_t *salt, u_char *out, size_t len);
 
 void ngx_quic_add_exemptions(ngx_connection_t *c, size_t size);
+
+#if (NGX_HAVE_IP_MTU_DISCOVER)
+size_t ngx_quic_mtu(ngx_connection_t *c);
+#endif
 
 #endif /* _NGX_EVENT_QUIC_H_INCLUDED_ */

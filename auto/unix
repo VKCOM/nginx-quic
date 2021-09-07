@@ -504,6 +504,17 @@ ngx_feature_test="socklen_t optlen = sizeof(struct tcp_info);
 . auto/feature
 
 
+ngx_feature="IP_MTU_DISCOVER"
+ngx_feature_name="NGX_HAVE_IP_MTU_DISCOVER"
+ngx_feature_run=no
+ngx_feature_incs="#include <sys/socket.h>
+                  #include <netinet/in.h>"
+ngx_feature_path=
+ngx_feature_libs=
+ngx_feature_test="setsockopt(0, IPPROTO_IP, IP_MTU_DISCOVER, NULL, 0)"
+. auto/feature
+
+
 ngx_feature="accept4()"
 ngx_feature_name="NGX_HAVE_ACCEPT4"
 ngx_feature_run=no

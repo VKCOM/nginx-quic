@@ -40,4 +40,9 @@ ngx_int_t ngx_quic_send_ack_range(ngx_connection_t *c,
 ssize_t ngx_quic_frame_sendto(ngx_connection_t *c, ngx_quic_frame_t *frame,
     size_t min, struct sockaddr *sockaddr, socklen_t socklen);
 
+#if (NGX_HAVE_IP_MTU_DISCOVER)
+ssize_t ngx_quic_frame_sendto_dont_fragment(ngx_connection_t *c, ngx_quic_frame_t *frame,
+    size_t min, struct sockaddr *sockaddr, socklen_t socklen);
+#endif
+
 #endif /* _NGX_EVENT_QUIC_OUTPUT_H_INCLUDED_ */

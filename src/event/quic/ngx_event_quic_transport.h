@@ -275,6 +275,9 @@ struct ngx_quic_frame_s {
     unsigned                                    need_ack:1;
     unsigned                                    pkt_need_ack:1;
     unsigned                                    flush:1;
+#if (NGX_HAVE_IP_MTU_DISCOVER)
+    unsigned                                    probe:1;
+#endif
 
     ngx_chain_t                                *data;
     union {

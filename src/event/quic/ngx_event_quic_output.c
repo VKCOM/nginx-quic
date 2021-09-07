@@ -14,8 +14,8 @@
 #define NGX_QUIC_MAX_LONG_HEADER         56
     /* 1 flags + 4 version + 2 x (1 + 20) s/dcid + 4 pn + 4 len + token len */
 
-#define NGX_QUIC_MAX_UDP_PAYLOAD_OUT   1252
-#define NGX_QUIC_MAX_UDP_PAYLOAD_OUT6  1232
+#define NGX_QUIC_MAX_UDP_PAYLOAD_OUT   1100
+#define NGX_QUIC_MAX_UDP_PAYLOAD_OUT6  1080
 
 #define NGX_QUIC_MAX_UDP_SEGMENT_BUF  65487 /* 65K - IPv6 header */
 #define NGX_QUIC_MAX_SEGMENTS            64 /* UDP_MAX_SEGMENTS */
@@ -35,7 +35,7 @@
 #define NGX_QUIC_MIN_PKT_LEN             21
 
 #define NGX_QUIC_MIN_SR_PACKET           43 /* 5 rand + 16 srt + 22 padding */
-#define NGX_QUIC_MAX_SR_PACKET         1200
+#define NGX_QUIC_MAX_SR_PACKET         NGX_QUIC_MIN_INITIAL_SIZE
 
 #define NGX_QUIC_CC_MIN_INTERVAL       1000 /* 1s */
 
@@ -70,8 +70,6 @@ static void ngx_quic_set_packet_number(ngx_quic_header_t *pkt,
 size_t
 ngx_quic_max_udp_payload(ngx_connection_t *c)
 {
-    /* TODO: path MTU discovery */
-
 #if (NGX_HAVE_INET6)
     if (c->sockaddr->sa_family == AF_INET6) {
         return NGX_QUIC_MAX_UDP_PAYLOAD_OUT6;
@@ -92,6 +90,12 @@ ngx_quic_output(ngx_connection_t *c)
     if (ngx_quic_socket_output(c, qc->socket) != NGX_OK) {
         return NGX_ERROR;
     }
+
+#if (NGX_HAVE_IP_MTU_DISCOVER)
+    if (qc->conf->mtu) {
+        ngx_quic_mtu_probe(c);
+    }
+#endif
 
     ngx_quic_set_lost_timer(c);
 
@@ -684,7 +688,7 @@ ngx_quic_output_packet(ngx_connection_t *c, ngx_quic_send_ctx_t *ctx,
          */
 
         if (has_pr) {
-            min = ngx_max(1200, min);
+            min = ngx_max(NGX_QUIC_MIN_INITIAL_SIZE, min);
         }
 
         if (min > max) {
@@ -1300,9 +1304,6 @@ ngx_quic_frame_sendto(ngx_connection_t *c, ngx_quic_frame_t *frame,
     pkt.scid.data = qc->socket->sid.id;
     pkt.scid.len = qc->socket->sid.len;
 
-    pkt.payload.data = src;
-    pkt.payload.len = len;
-
     hlen = EVP_GCM_TLS_TAG_LEN
             + ngx_quic_create_header(&pkt, NULL, len + EVP_GCM_TLS_TAG_LEN, NULL);
 
@@ -1316,13 +1317,69 @@ ngx_quic_frame_sendto(ngx_connection_t *c, ngx_quic_frame_t *frame,
         len = min - hlen;
     }
 
+    pkt.payload.data = src;
+    pkt.payload.len = len;
+
     res.data = dst;
 
     if (ngx_quic_encrypt(&pkt, &res) != NGX_OK) {
         return -1;
     }
 
+    frame->plen = res.len;
+    frame->pnum = ctx->pnum;
+    frame->first = ngx_current_msec;
+    frame->last = frame->first;
+
     ctx->pnum++;
 
     return ngx_quic_send(c, res.data, res.len, sockaddr, socklen);
 }
+
+
+#if (NGX_HAVE_IP_MTU_DISCOVER)
+ssize_t
+ngx_quic_frame_sendto_dont_fragment(ngx_connection_t *c, ngx_quic_frame_t *frame,
+    size_t min, struct sockaddr *sockaddr, socklen_t socklen)
+{
+    ssize_t    n;
+    int        optval = IP_PMTUDISC_DO, v6_only = 0;
+    socklen_t  v6_only_len = sizeof(v6_only);
+
+#if (NGX_HAVE_INET6)
+    if (c->sockaddr->sa_family == AF_INET6) {
+        if (setsockopt(c->fd, IPPROTO_IPV6, IPV6_MTU_DISCOVER, &optval, sizeof(optval)) == -1) {
+            return NGX_ERROR;
+        }
+
+        if (getsockopt(c->fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6_only, &v6_only_len) != 0) {
+            return NGX_ERROR;
+        }
+    }
+#endif
+
+    if (v6_only == 0 &&
+        setsockopt(c->fd, IPPROTO_IP, IP_MTU_DISCOVER, (const void *) &optval, sizeof(optval)) == -1)
+    {
+        return NGX_ERROR;
+    }
+
+    n = ngx_quic_frame_sendto(c, frame, min, sockaddr, socklen);
+
+    optval = IP_PMTUDISC_DONT;
+
+    if (!v6_only) {
+        setsockopt(c->fd, IPPROTO_IP, IP_MTU_DISCOVER, (const void *) &optval, sizeof(optval));
+    }
+
+#if (NGX_HAVE_INET6)
+    if (c->sockaddr->sa_family == AF_INET6 &&
+        setsockopt(c->fd, IPPROTO_IPV6, IPV6_MTU_DISCOVER, &optval, sizeof(optval)) == -1)
+    {
+        return NGX_ERROR;
+    }
+#endif
+
+    return n;
+}
+#endif
