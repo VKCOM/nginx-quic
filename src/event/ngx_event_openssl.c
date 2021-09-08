@@ -2914,6 +2914,13 @@ ngx_ssl_shutdown(ngx_connection_t *c)
     ngx_err_t   err;
     ngx_uint_t  tries;
 
+#if (NGX_QUIC)
+    if (c->quic) {
+        /* QUIC streams inherit SSL object */
+        return NGX_OK;
+    }
+#endif
+
     rc = NGX_OK;
 
     ngx_ssl_ocsp_cleanup(c);
