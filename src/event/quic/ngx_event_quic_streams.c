@@ -1235,8 +1235,13 @@ ngx_quic_handle_reset_stream_frame(ngx_connection_t *c,
         return NGX_ERROR;
     }
 
+    if (sc->sent > (off_t) qs->acked) {
+        qc->streams.sent -= (sc->sent - (off_t) qs->acked);
+        sc->sent = (off_t) qs->acked;
+    }
+
     if (rev->active) {
-        rev->handler(rev);
+        ngx_post_event(rev, &ngx_posted_events);
     }
 
     return NGX_OK;
@@ -1292,12 +1297,17 @@ ngx_quic_handle_stop_sending_frame(ngx_connection_t *c,
         return ngx_quic_init_stream(qs);
     }
 
+    if (qs->connection->sent > (off_t) qs->acked) {
+        qc->streams.sent -= (qs->connection->sent - (off_t) qs->acked);
+        qs->connection->sent = (off_t) qs->acked;
+    }
+
     wev = qs->connection->write;
     wev->error = 1;
     wev->ready = 1;
 
     if (wev->active) {
-        wev->handler(wev);
+        ngx_post_event(wev, &ngx_posted_events);
     }
 
     return NGX_OK;
