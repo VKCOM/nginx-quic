@@ -117,6 +117,7 @@ typedef struct {
     ngx_queue_t                       uninitialized;
 
     uint64_t                          sent;
+    uint64_t                          exemptions;
     uint64_t                          recv_offset;
     uint64_t                          recv_window;
     uint64_t                          recv_last;

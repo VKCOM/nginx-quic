@@ -646,6 +646,14 @@ ngx_quic_stream_send_chain(ngx_connection_t *c, ngx_chain_t *in, off_t limit)
 
     n = (limit && (size_t) limit < flow) ? (size_t) limit : flow;
 
+    if (qc->streams.exemptions) {
+        if (qc->streams.exemptions > n) {
+            qc->streams.exemptions -= n;
+        } else {
+            qc->streams.exemptions = 0;
+        }
+    }
+
     frame = ngx_quic_alloc_frame(pc);
     if (frame == NULL) {
         return NGX_CHAIN_ERROR;
@@ -699,7 +707,7 @@ ngx_quic_max_stream_flow(ngx_connection_t *c)
     qs = c->quic;
     qc = ngx_quic_get_connection(qs->parent);
 
-    size = qc->conf->stream_buf_size;
+    size = qc->conf->stream_buf_size + qc->streams.exemptions;
     sent = c->sent;
     unacked = sent - qs->acked;
 
@@ -1469,4 +1477,19 @@ ngx_quic_update_flow(ngx_connection_t *c, uint64_t last)
     }
 
     return NGX_OK;
+}
+
+
+void
+ngx_quic_add_exemptions(ngx_connection_t *c, size_t size)
+{
+    ngx_connection_t       *pc;
+    ngx_quic_stream_t      *qs;
+    ngx_quic_connection_t  *qc;
+
+    qs = c->quic;
+    pc = qs->parent;
+    qc = ngx_quic_get_connection(pc);
+
+    qc->streams.exemptions += size;
 }

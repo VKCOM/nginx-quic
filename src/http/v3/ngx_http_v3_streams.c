@@ -282,6 +282,8 @@ ngx_http_v3_create_push_stream(ngx_connection_t *c, uint64_t push_id)
     p = (u_char *) ngx_http_v3_encode_varlen_int(p, push_id);
     n = p - buf;
 
+    ngx_quic_add_exemptions(sc, n);
+
     if (sc->send(sc, buf, n) != (ssize_t) n) {
         goto failed;
     }
@@ -383,6 +385,8 @@ ngx_http_v3_get_uni_stream(ngx_connection_t *c, ngx_uint_t type)
 
     n = (u_char *) ngx_http_v3_encode_varlen_int(buf, type) - buf;
 
+    ngx_quic_add_exemptions(sc, n);
+
     if (sc->send(sc, buf, n) != (ssize_t) n) {
         goto failed;
     }
@@ -431,6 +435,8 @@ ngx_http_v3_send_settings(ngx_connection_t *c)
     p = (u_char *) ngx_http_v3_encode_varlen_int(p, h3scf->max_blocked_streams);
     n = p - buf;
 
+    ngx_quic_add_exemptions(cc, n);
+
     if (cc->send(cc, buf, n) != (ssize_t) n) {
         goto failed;
     }
@@ -464,6 +470,8 @@ ngx_http_v3_send_goaway(ngx_connection_t *c, uint64_t id)
     p = (u_char *) ngx_http_v3_encode_varlen_int(p, n);
     p = (u_char *) ngx_http_v3_encode_varlen_int(p, id);
     n = p - buf;
+
+    ngx_quic_add_exemptions(cc, n);
 
     if (cc->send(cc, buf, n) != (ssize_t) n) {
         goto failed;
@@ -507,6 +515,8 @@ ngx_http_v3_send_ref_insert(ngx_connection_t *c, ngx_uint_t dynamic,
 
     n = p - buf;
 
+    ngx_quic_add_exemptions(ec, n + value->len);
+
     if (ec->send(ec, buf, n) != (ssize_t) n) {
         goto failed;
     }
@@ -544,6 +554,8 @@ ngx_http_v3_send_insert(ngx_connection_t *c, ngx_str_t *name, ngx_str_t *value)
     buf[0] = 0x40;
     n = (u_char *) ngx_http_v3_encode_prefix_int(buf, name->len, 5) - buf;
 
+    ngx_quic_add_exemptions(ec, n + name->len);
+
     if (ec->send(ec, buf, n) != (ssize_t) n) {
         goto failed;
     }
@@ -551,6 +563,8 @@ ngx_http_v3_send_insert(ngx_connection_t *c, ngx_str_t *name, ngx_str_t *value)
     if (ec->send(ec, name->data, name->len) != (ssize_t) name->len) {
         goto failed;
     }
+
+    ngx_quic_add_exemptions(ec, n + value->len);
 
     /* XXX option for huffman? */
     buf[0] = 0;
@@ -592,6 +606,8 @@ ngx_http_v3_send_set_capacity(ngx_connection_t *c, ngx_uint_t capacity)
     buf[0] = 0x20;
     n = (u_char *) ngx_http_v3_encode_prefix_int(buf, capacity, 5) - buf;
 
+    ngx_quic_add_exemptions(ec, n);
+
     if (ec->send(ec, buf, n) != (ssize_t) n) {
         ngx_http_v3_close_uni_stream(ec);
         return NGX_ERROR;
@@ -618,6 +634,8 @@ ngx_http_v3_send_duplicate(ngx_connection_t *c, ngx_uint_t index)
 
     buf[0] = 0;
     n = (u_char *) ngx_http_v3_encode_prefix_int(buf, index, 5) - buf;
+
+    ngx_quic_add_exemptions(ec, n);
 
     if (ec->send(ec, buf, n) != (ssize_t) n) {
         ngx_http_v3_close_uni_stream(ec);
@@ -646,6 +664,8 @@ ngx_http_v3_send_ack_section(ngx_connection_t *c, ngx_uint_t stream_id)
     buf[0] = 0x80;
     n = (u_char *) ngx_http_v3_encode_prefix_int(buf, stream_id, 7) - buf;
 
+    ngx_quic_add_exemptions(dc, n);
+
     if (dc->send(dc, buf, n) != (ssize_t) n) {
         ngx_http_v3_close_uni_stream(dc);
         return NGX_ERROR;
@@ -673,6 +693,8 @@ ngx_http_v3_send_cancel_stream(ngx_connection_t *c, ngx_uint_t stream_id)
     buf[0] = 0x40;
     n = (u_char *) ngx_http_v3_encode_prefix_int(buf, stream_id, 6) - buf;
 
+    ngx_quic_add_exemptions(dc, n);
+
     if (dc->send(dc, buf, n) != (ssize_t) n) {
         ngx_http_v3_close_uni_stream(dc);
         return NGX_ERROR;
@@ -699,6 +721,8 @@ ngx_http_v3_send_inc_insert_count(ngx_connection_t *c, ngx_uint_t inc)
 
     buf[0] = 0;
     n = (u_char *) ngx_http_v3_encode_prefix_int(buf, inc, 6) - buf;
+
+    ngx_quic_add_exemptions(dc, n);
 
     if (dc->send(dc, buf, n) != (ssize_t) n) {
         ngx_http_v3_close_uni_stream(dc);
