@@ -143,9 +143,14 @@ valid:
         /* address has changed */
         ngx_memzero(&qc->congestion, sizeof(ngx_quic_congestion_t));
 
-        qc->congestion.window = ngx_min(10 * qc->tp.max_udp_payload_size,
-                                   ngx_max(2 * qc->tp.max_udp_payload_size,
-                                           14720));
+        if (qc->conf->initial_window) {
+            qc->congestion.window = qc->conf->initial_window;
+        } else {
+            qc->congestion.window = ngx_min(10 * qc->tp.max_udp_payload_size,
+                                        ngx_max(2 * qc->tp.max_udp_payload_size,
+                                                14720));
+        }
+
         qc->congestion.ssthresh = (size_t) -1;
         qc->congestion.recovery_start = ngx_current_msec;
     }

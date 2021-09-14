@@ -126,6 +126,20 @@ static ngx_command_t  ngx_http_quic_commands[] = {
       offsetof(ngx_quic_conf_t, stream_buf_size),
       NULL },
 
+    { ngx_string("quic_initial_window"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_size_slot,
+      NGX_HTTP_SRV_CONF_OFFSET,
+      offsetof(ngx_quic_conf_t, initial_window),
+      NULL },
+
+    { ngx_string("quic_min_window"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_size_slot,
+      NGX_HTTP_SRV_CONF_OFFSET,
+      offsetof(ngx_quic_conf_t, min_window),
+      NULL },
+
     { ngx_string("quic_retry"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_FLAG,
       ngx_conf_set_flag_slot,
@@ -339,6 +353,8 @@ ngx_http_quic_create_srv_conf(ngx_conf_t *cf)
     conf->tp.active_connection_id_limit = NGX_CONF_UNSET_UINT;
 
     conf->stream_buf_size = NGX_CONF_UNSET_SIZE;
+    conf->initial_window = NGX_CONF_UNSET_SIZE;
+    conf->min_window = NGX_CONF_UNSET_SIZE;
     conf->retry = NGX_CONF_UNSET;
     conf->gso_enabled = NGX_CONF_UNSET;
     conf->require_alpn = 1;
@@ -401,6 +417,9 @@ ngx_http_quic_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 
     ngx_conf_merge_uint_value(conf->tp.active_connection_id_limit,
                               prev->tp.active_connection_id_limit, 2);
+
+    ngx_conf_merge_size_value(conf->initial_window, prev->initial_window, 0);
+    ngx_conf_merge_size_value(conf->min_window, prev->min_window, 0);
 
     ngx_conf_merge_value(conf->retry, prev->retry, 0);
     ngx_conf_merge_value(conf->gso_enabled, prev->gso_enabled, 0);

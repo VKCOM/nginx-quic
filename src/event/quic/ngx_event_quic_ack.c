@@ -532,6 +532,10 @@ ngx_quic_persistent_congestion(ngx_connection_t *c)
     cg->recovery_start = ngx_current_msec;
     cg->window = qc->tp.max_udp_payload_size * 2;
 
+    if (qc->conf->min_window && cg->window < qc->conf->min_window) {
+        cg->window = qc->conf->min_window;
+    }
+
     ngx_log_debug1(NGX_LOG_DEBUG_EVENT, c->log, 0,
                    "quic persistent congestion win:%uz", cg->window);
 }
@@ -667,6 +671,10 @@ ngx_quic_congestion_lost(ngx_connection_t *c, ngx_quic_frame_t *f)
 
     if (cg->window < qc->tp.max_udp_payload_size * 2) {
         cg->window = qc->tp.max_udp_payload_size * 2;
+    }
+
+    if (qc->conf->min_window && cg->window < qc->conf->min_window) {
+        cg->window = qc->conf->min_window;
     }
 
     cg->ssthresh = cg->window;
