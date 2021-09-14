@@ -119,6 +119,13 @@ static ngx_command_t  ngx_http_quic_commands[] = {
       offsetof(ngx_quic_conf_t, tp.active_connection_id_limit),
       &ngx_http_quic_active_connection_id_limit_bounds },
 
+    { ngx_string("quic_stream_buf_size"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_size_slot,
+      NGX_HTTP_SRV_CONF_OFFSET,
+      offsetof(ngx_quic_conf_t, stream_buf_size),
+      NULL },
+
     { ngx_string("quic_retry"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_FLAG,
       ngx_conf_set_flag_slot,
@@ -331,6 +338,7 @@ ngx_http_quic_create_srv_conf(ngx_conf_t *cf)
     conf->tp.disable_active_migration = NGX_CONF_UNSET;
     conf->tp.active_connection_id_limit = NGX_CONF_UNSET_UINT;
 
+    conf->stream_buf_size = NGX_CONF_UNSET_SIZE;
     conf->retry = NGX_CONF_UNSET;
     conf->gso_enabled = NGX_CONF_UNSET;
     conf->require_alpn = 1;
@@ -347,6 +355,10 @@ ngx_http_quic_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 
     ngx_http_ssl_srv_conf_t  *sscf;
 
+    ngx_conf_merge_size_value(conf->stream_buf_size,
+                              prev->stream_buf_size,
+                              NGX_QUIC_STREAM_BUFSIZE);
+
     ngx_conf_merge_msec_value(conf->tp.max_idle_timeout,
                               prev->tp.max_idle_timeout, 60000);
 
@@ -360,19 +372,19 @@ ngx_http_quic_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
 
     ngx_conf_merge_size_value(conf->tp.initial_max_data,
                               prev->tp.initial_max_data,
-                              16 * NGX_QUIC_STREAM_BUFSIZE);
+                              16 * conf->stream_buf_size);
 
     ngx_conf_merge_size_value(conf->tp.initial_max_stream_data_bidi_local,
                               prev->tp.initial_max_stream_data_bidi_local,
-                              NGX_QUIC_STREAM_BUFSIZE);
+                              conf->stream_buf_size);
 
     ngx_conf_merge_size_value(conf->tp.initial_max_stream_data_bidi_remote,
                               prev->tp.initial_max_stream_data_bidi_remote,
-                              NGX_QUIC_STREAM_BUFSIZE);
+                              conf->stream_buf_size);
 
     ngx_conf_merge_size_value(conf->tp.initial_max_stream_data_uni,
                               prev->tp.initial_max_stream_data_uni,
-                              NGX_QUIC_STREAM_BUFSIZE);
+                              conf->stream_buf_size);
 
     ngx_conf_merge_uint_value(conf->tp.initial_max_streams_bidi,
                               prev->tp.initial_max_streams_bidi, 16);
