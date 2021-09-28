@@ -170,15 +170,23 @@ ngx_quic_free_frames(ngx_connection_t *c, ngx_queue_t *frames)
 }
 
 
-static void
+void
 ngx_quic_queue_frame_after(ngx_quic_connection_t *qc, ngx_quic_frame_t *frame, ngx_queue_t *queue, ngx_int_t create)
 {
+    ngx_quic_send_ctx_t  *ctx;
+    ctx = ngx_quic_get_send_ctx(qc, frame->level);
+
     if (create) {
         frame->len = ngx_quic_create_frame(NULL, frame);
         /* always succeeds */
     }
 
     ngx_queue_insert_after(queue, &frame->queue);
+
+    if (!ctx->fqueue.attached && queue == &ctx->frames) {
+        ngx_queue_insert_head(&ctx->fqueues, &ctx->fqueue.queue);
+        ctx->fqueue.attached = 1;
+    }
 
     if (qc->closing) {
         return;

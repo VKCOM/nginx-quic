@@ -171,6 +171,9 @@ struct ngx_quic_send_ctx_s {
     uint64_t                          largest_pn;  /* received from peer */
 
     ngx_queue_t                       frames;      /* generated frames */
+    ngx_quic_fqueue_t                 fqueue;
+
+    ngx_queue_t                       fqueues;     /* generated frames by queues */
     ngx_queue_t                       sending;     /* frames assigned to pkt */
     ngx_queue_t                       sent;        /* frames waiting ACK */
 

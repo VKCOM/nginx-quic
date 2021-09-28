@@ -633,6 +633,8 @@ ngx_quic_stream_send_chain(ngx_connection_t *c, ngx_chain_t *in, off_t limit)
     ngx_quic_frame_t       *frame;
     ngx_quic_stream_t      *qs;
     ngx_quic_connection_t  *qc;
+    ngx_quic_send_ctx_t    *ctx;
+    ngx_quic_fqueue_t      *fqueue;
 
     qs = c->quic;
     pc = qs->parent;
@@ -690,7 +692,34 @@ ngx_quic_stream_send_chain(ngx_connection_t *c, ngx_chain_t *in, off_t limit)
     c->sent += n;
     qc->streams.sent += n;
 
-    ngx_quic_queue_frame(qc, frame);
+    if (qc->conf->stream_shuffle) {
+        ctx = ngx_quic_get_send_ctx(qc, frame->level);
+        fqueue = qs->fqueue;
+
+        if (fqueue == NULL) {
+            fqueue = ngx_pcalloc(pc->pool, sizeof(ngx_quic_fqueue_t));
+            if (fqueue == NULL) {
+                return NGX_CHAIN_ERROR;
+            }
+
+            fqueue->frames = ngx_pcalloc(pc->pool, sizeof(ngx_queue_t));
+            if (fqueue->frames == NULL) {
+                return NGX_CHAIN_ERROR;
+            }
+
+            ngx_queue_init(fqueue->frames);
+            qs->fqueue = fqueue;
+        }
+
+        if (!fqueue->attached) {
+            ngx_queue_insert_tail(&ctx->fqueues, &fqueue->queue);
+            fqueue->attached = 1;
+        }
+
+        ngx_quic_queue_frame_after(qc, frame, ngx_queue_last(fqueue->frames), 1);
+    } else {
+        ngx_quic_queue_frame(qc, frame);
+    }
 
     wev->ready = (n < flow) ? 1 : 0;
 

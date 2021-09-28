@@ -130,6 +130,13 @@ static ngx_command_t  ngx_http_quic_commands[] = {
       offsetof(ngx_quic_conf_t, stream_buf_size),
       NULL },
 
+    { ngx_string("quic_stream_shuffle"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_num_slot,
+      NGX_HTTP_SRV_CONF_OFFSET,
+      offsetof(ngx_quic_conf_t, stream_shuffle),
+      NULL },
+
     { ngx_string("quic_initial_window"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_size_slot,
@@ -433,6 +440,7 @@ ngx_http_quic_create_srv_conf(ngx_conf_t *cf)
     conf->mtu_target = NGX_CONF_UNSET_SIZE;
 #endif
 
+    conf->stream_shuffle = NGX_CONF_UNSET_SIZE;
     return conf;
 }
 
@@ -506,6 +514,8 @@ ngx_http_quic_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_conf_merge_size_value(conf->mtu_target, prev->mtu_target, 1472);
     ngx_conf_merge_value(conf->mtu_attemts, prev->mtu_attemts, 8);
 #endif
+
+    ngx_conf_merge_uint_value(conf->stream_shuffle, prev->stream_shuffle, 8);
 
     if (conf->migration_close_connection && !conf->tp.disable_active_migration) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,

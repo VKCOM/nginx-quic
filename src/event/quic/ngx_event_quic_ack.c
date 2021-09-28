@@ -860,11 +860,12 @@ ngx_quic_pto_handler(ngx_event_t *ev)
 {
     ngx_uint_t              i;
     ngx_msec_t              now;
-    ngx_queue_t            *q, *next;
+    ngx_queue_t            *q, *next, *sq;
     ngx_connection_t       *c;
     ngx_quic_frame_t       *f;
     ngx_quic_send_ctx_t    *ctx;
     ngx_quic_connection_t  *qc;
+    ngx_quic_fqueue_t      *fqueue;
 
     ngx_log_debug0(NGX_LOG_DEBUG_EVENT, ev->log, 0, "quic pto timer");
 
@@ -897,19 +898,26 @@ ngx_quic_pto_handler(ngx_event_t *ev)
                        "quic pto %s pto_count:%ui",
                        ngx_quic_level_name(ctx->level), qc->pto_count);
 
-        for (q = ngx_queue_head(&ctx->frames);
-             q != ngx_queue_sentinel(&ctx->frames);
-             /* void */)
+        for (sq = ngx_queue_head(&ctx->fqueues);
+            sq != ngx_queue_sentinel(&ctx->fqueues);
+            sq = ngx_queue_next(sq))
         {
-            next = ngx_queue_next(q);
-            f = ngx_queue_data(q, ngx_quic_frame_t, queue);
+            fqueue = ngx_queue_data(sq, ngx_quic_fqueue_t, queue);
 
-            if (f->type == NGX_QUIC_FT_PING) {
-                ngx_quic_queue_frame_remove(qc, &ctx->frames, f);
-                ngx_quic_free_frame(c, f);
+            for (q = ngx_queue_head(fqueue->frames);
+                 q != ngx_queue_sentinel(fqueue->frames);
+                 /* void */)
+            {
+                next = ngx_queue_next(q);
+                f = ngx_queue_data(q, ngx_quic_frame_t, queue);
+
+                if (f->type == NGX_QUIC_FT_PING) {
+                    ngx_quic_queue_frame_remove(qc, fqueue->frames, f);
+                    ngx_quic_free_frame(c, f);
+                }
+
+                q = next;
             }
-
-            q = next;
         }
 
         for (q = ngx_queue_head(&ctx->sent);

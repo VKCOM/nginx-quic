@@ -74,7 +74,18 @@ typedef struct {
     ngx_int_t                  mtu_attemts;
     size_t                     mtu_target;
 #endif
+
+    uint64_t                   stream_shuffle;
 } ngx_quic_conf_t;
+
+
+typedef struct {
+    ngx_queue_t                queue;
+    ngx_queue_t               *frames;
+    uint64_t                   count;
+
+    unsigned                   attached : 1;
+} ngx_quic_fqueue_t;
 
 
 struct ngx_quic_stream_s {
@@ -82,6 +93,7 @@ struct ngx_quic_stream_s {
     ngx_queue_t                queue;
     ngx_connection_t          *parent;
     ngx_connection_t          *connection;
+    ngx_quic_fqueue_t         *fqueue;
     uint64_t                   id;
     uint64_t                   acked;
     uint64_t                   send_max_data;

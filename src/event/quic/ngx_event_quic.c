@@ -261,6 +261,9 @@ ngx_quic_new_connection(ngx_connection_t *c, ngx_quic_conf_t *conf,
         qc->send_ctx[i].largest_ack = NGX_QUIC_UNSET_PN;
         qc->send_ctx[i].largest_range = NGX_QUIC_UNSET_PN;
         qc->send_ctx[i].pending_ack = NGX_QUIC_UNSET_PN;
+
+        ngx_queue_init(&qc->send_ctx[i].fqueues);
+        qc->send_ctx[i].fqueue.frames = &qc->send_ctx[i].frames;
     }
 
     qc->send_ctx[0].level = ssl_encryption_initial;
@@ -1048,6 +1051,7 @@ ngx_quic_discard_ctx(ngx_connection_t *c, enum ssl_encryption_level_t level)
     ngx_quic_socket_t      *qsock;
     ngx_quic_send_ctx_t    *ctx;
     ngx_quic_connection_t  *qc;
+    ngx_quic_fqueue_t      *fqueue;
 
     qc = ngx_quic_get_connection(c);
 
@@ -1073,14 +1077,21 @@ ngx_quic_discard_ctx(ngx_connection_t *c, enum ssl_encryption_level_t level)
         ngx_quic_free_frame(c, f);
     }
 
-    while (!ngx_queue_empty(&ctx->frames)) {
-        q = ngx_queue_head(&ctx->frames);
-        f = ngx_queue_data(q, ngx_quic_frame_t, queue);
+    while (!ngx_queue_empty(&ctx->fqueues)) {
+        q = ngx_queue_head(&ctx->fqueues);
+        ngx_queue_remove(q);
 
-        ngx_quic_queue_frame_remove(qc, &ctx->frames, f);
+        fqueue = ngx_queue_data(q, ngx_quic_fqueue_t, queue);
 
-        ngx_quic_congestion_ack(c, f);
-        ngx_quic_free_frame(c, f);
+        while (!ngx_queue_empty(fqueue->frames)) {
+            q = ngx_queue_head(fqueue->frames);
+            f = ngx_queue_data(q, ngx_quic_frame_t, queue);
+
+            ngx_quic_queue_frame_remove(qc, fqueue->frames, f);
+
+            ngx_quic_congestion_ack(c, f);
+            ngx_quic_free_frame(c, f);
+        }
     }
 
     if (level == ssl_encryption_initial) {
