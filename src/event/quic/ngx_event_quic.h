@@ -76,6 +76,7 @@ typedef struct {
 #endif
 
     uint64_t                   stream_shuffle;
+    ngx_flag_t                 nodelay;
 } ngx_quic_conf_t;
 
 
