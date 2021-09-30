@@ -60,6 +60,8 @@ static ssize_t ngx_quic_send_segments(ngx_connection_t *c, u_char *buf,
 static ssize_t ngx_quic_output_packet(ngx_connection_t *c,
     ngx_quic_send_ctx_t *ctx, u_char *data, size_t max, size_t min,
     ngx_quic_socket_t *qsock);
+static void ngx_quic_init_packet(ngx_connection_t *c, ngx_quic_send_ctx_t *ctx,
+    ngx_quic_socket_t *qsock, ngx_quic_header_t *pkt);
 static ngx_uint_t ngx_quic_get_padding_level(ngx_connection_t *c);
 static ssize_t ngx_quic_send(ngx_connection_t *c, u_char *buf, size_t len,
     struct sockaddr *sockaddr, socklen_t socklen);
@@ -585,14 +587,14 @@ ngx_quic_output_packet(ngx_connection_t *c, ngx_quic_send_ctx_t *ctx,
 
     qc = ngx_quic_get_connection(c);
 
+    ngx_quic_init_packet(c, ctx, qsock, &pkt);
+
     hlen = (ctx->level == ssl_encryption_application)
            ? NGX_QUIC_MAX_SHORT_HEADER
            : NGX_QUIC_MAX_LONG_HEADER;
 
     hlen += EVP_GCM_TLS_TAG_LEN;
     hlen -= NGX_QUIC_MAX_CID_LEN - qsock->cid->len;
-
-    ngx_memzero(&pkt, sizeof(ngx_quic_header_t));
 
     now = ngx_current_msec;
     nframes = 0;
@@ -696,33 +698,6 @@ ngx_quic_output_packet(ngx_connection_t *c, ngx_quic_send_ctx_t *ctx,
     out.data = src;
     out.len = len;
 
-    pkt.keys = qc->keys;
-    pkt.flags = NGX_QUIC_PKT_FIXED_BIT;
-
-    if (ctx->level == ssl_encryption_initial) {
-        pkt.flags |= NGX_QUIC_PKT_LONG | NGX_QUIC_PKT_INITIAL;
-
-    } else if (ctx->level == ssl_encryption_handshake) {
-        pkt.flags |= NGX_QUIC_PKT_LONG | NGX_QUIC_PKT_HANDSHAKE;
-
-    } else {
-        if (qc->key_phase) {
-            pkt.flags |= NGX_QUIC_PKT_KPHASE;
-        }
-    }
-
-    ngx_quic_set_packet_number(&pkt, ctx);
-
-    pkt.version = qc->version;
-    pkt.log = c->log;
-    pkt.level = ctx->level;
-
-    pkt.dcid.data = qsock->cid->id;
-    pkt.dcid.len = qsock->cid->len;
-
-    pkt.scid.data = qsock->sid.id;
-    pkt.scid.len = qsock->sid.len;
-
     pad_len = 4;
 
     if (min || has_pr) {
@@ -784,6 +759,46 @@ ngx_quic_output_packet(ngx_connection_t *c, ngx_quic_send_ctx_t *ctx,
     }
 
     return res.len;
+}
+
+
+static void
+ngx_quic_init_packet(ngx_connection_t *c, ngx_quic_send_ctx_t *ctx,
+    ngx_quic_socket_t *qsock, ngx_quic_header_t *pkt)
+{
+    ngx_quic_connection_t  *qc;
+
+    qc = ngx_quic_get_connection(c);
+
+    ngx_memzero(pkt, sizeof(ngx_quic_header_t));
+
+    pkt->flags = NGX_QUIC_PKT_FIXED_BIT;
+
+    if (ctx->level == ssl_encryption_initial) {
+        pkt->flags |= NGX_QUIC_PKT_LONG | NGX_QUIC_PKT_INITIAL;
+
+    } else if (ctx->level == ssl_encryption_handshake) {
+        pkt->flags |= NGX_QUIC_PKT_LONG | NGX_QUIC_PKT_HANDSHAKE;
+
+    } else {
+        if (qc->key_phase) {
+            pkt->flags |= NGX_QUIC_PKT_KPHASE;
+        }
+    }
+
+    pkt->dcid.data = qsock->cid->id;
+    pkt->dcid.len = qsock->cid->len;
+
+    pkt->scid.data = qsock->sid.id;
+    pkt->scid.len = qsock->sid.len;
+
+    pkt->version = qc->version;
+    pkt->log = c->log;
+    pkt->level = ctx->level;
+
+    pkt->keys = qc->keys;
+
+    ngx_quic_set_packet_number(pkt, ctx);
 }
 
 
@@ -1309,8 +1324,9 @@ ngx_quic_frame_sendto(ngx_connection_t *c, ngx_quic_frame_t *frame,
     static u_char           dst[NGX_QUIC_MAX_UDP_PAYLOAD_SIZE];
 
     qc = ngx_quic_get_connection(c);
+    ctx = ngx_quic_get_send_ctx(qc, ssl_encryption_application);
 
-    ngx_memzero(&pkt, sizeof(ngx_quic_header_t));
+    ngx_quic_init_packet(c, ctx, qc->socket, &pkt);
 
     len = ngx_quic_create_frame(NULL, frame);
     if (len > NGX_QUIC_MAX_UDP_PAYLOAD_SIZE) {
@@ -1328,27 +1344,6 @@ ngx_quic_frame_sendto(ngx_connection_t *c, ngx_quic_frame_t *frame,
         ngx_memset(src + len, NGX_QUIC_FT_PADDING, min - len);
         len = min;
     }
-
-    pkt.keys = qc->keys;
-    pkt.flags = NGX_QUIC_PKT_FIXED_BIT;
-
-    if (qc->key_phase) {
-        pkt.flags |= NGX_QUIC_PKT_KPHASE;
-    }
-
-    ctx = ngx_quic_get_send_ctx(qc, ssl_encryption_application);
-
-    ngx_quic_set_packet_number(&pkt, ctx);
-
-    pkt.version = qc->version;
-    pkt.log = c->log;
-    pkt.level = ctx->level;
-
-    pkt.dcid.data = qc->socket->cid->id;
-    pkt.dcid.len = qc->socket->cid->len;
-
-    pkt.scid.data = qc->socket->sid.id;
-    pkt.scid.len = qc->socket->sid.len;
 
     pkt.payload.data = src;
     pkt.payload.len = len;
