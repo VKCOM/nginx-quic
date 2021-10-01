@@ -1013,3 +1013,14 @@ ngx_feature_test='struct addrinfo *res;
                   if (getaddrinfo("localhost", NULL, NULL, &res) != 0) return 1;
                   freeaddrinfo(res)'
 . auto/feature
+
+
+ngx_feature="recvmmsg()"
+ngx_feature_name="NGX_HAVE_UDP_RECVMMSG"
+ngx_feature_run=no
+ngx_feature_incs="#include <sys/socket.h>"
+ngx_feature_path=
+ngx_feature_libs=
+ngx_feature_test="struct mmsghdr msgs[1];
+              recvmmsg(-1, msgs, 1, 0, NULL);"
+. auto/feature

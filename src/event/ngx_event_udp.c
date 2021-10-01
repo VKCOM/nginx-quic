@@ -12,6 +12,11 @@
 
 #if !(NGX_WIN32)
 
+
+#if (NGX_HAVE_UDP_RECVMMSG)
+#define NGX_UDP_RECVMMSG_MAX  64
+#endif
+
 static void ngx_close_accepted_udp_connection(ngx_connection_t *c);
 static ssize_t ngx_udp_shared_recv(ngx_connection_t *c, u_char *buf,
     size_t size);
@@ -19,26 +24,417 @@ static ngx_int_t ngx_create_udp_connection(ngx_connection_t *c);
 static ngx_connection_t *ngx_lookup_udp_connection(ngx_listening_t *ls,
     ngx_str_t *key, struct sockaddr *local_sockaddr, socklen_t local_socklen);
 
+static ngx_int_t ngx_event_process_packet(ngx_event_t *ev, struct msghdr *msg, u_char *buffer, size_t n);
 
-void
-ngx_event_recvmsg(ngx_event_t *ev)
+static ngx_int_t
+ngx_event_process_packet(ngx_event_t *ev, struct msghdr *msg, u_char *buffer, size_t n)
 {
     size_t             len;
-    ssize_t            n;
     ngx_str_t          key;
     ngx_buf_t          buf;
     ngx_log_t         *log;
-    ngx_err_t          err;
     socklen_t          local_socklen;
     ngx_event_t       *rev, *wev;
-    struct iovec       iov[1];
-    struct msghdr      msg;
     ngx_sockaddr_t     sa, lsa;
     ngx_udp_dgram_t    dgram;
     struct sockaddr   *local_sockaddr;
     ngx_listening_t   *ls;
     ngx_event_conf_t  *ecf;
     ngx_connection_t  *c, *lc;
+
+    ecf = ngx_event_get_conf(ngx_cycle->conf_ctx, ngx_event_core_module);
+
+    lc = ev->data;
+    ls = lc->listening;
+
+    dgram.sockaddr = msg->msg_name;
+    dgram.socklen = msg->msg_namelen;
+
+    if (dgram.socklen > (socklen_t) sizeof(ngx_sockaddr_t)) {
+        dgram.socklen = sizeof(ngx_sockaddr_t);
+    }
+
+    if (dgram.socklen == 0) {
+
+        /*
+         * on Linux recvmsg() returns zero msg_namelen
+         * when receiving packets from unbound AF_UNIX sockets
+         */
+
+        ngx_memzero(&sa, sizeof(struct sockaddr));
+        sa.sockaddr.sa_family = ls->sockaddr->sa_family;
+
+        dgram.socklen = sizeof(struct sockaddr);
+        dgram.sockaddr = (struct sockaddr *) &sa;
+    }
+
+    local_sockaddr = ls->sockaddr;
+    local_socklen = ls->socklen;
+
+#if (NGX_HAVE_ADDRINFO_CMSG)
+
+    if (ls->wildcard) {
+        struct cmsghdr  *cmsg;
+
+        ngx_memcpy(&lsa, local_sockaddr, local_socklen);
+        local_sockaddr = &lsa.sockaddr;
+
+        for (cmsg = CMSG_FIRSTHDR(msg);
+             cmsg != NULL;
+             cmsg = CMSG_NXTHDR(msg, cmsg))
+        {
+            if (ngx_get_srcaddr_cmsg(cmsg, local_sockaddr) == NGX_OK) {
+                break;
+            }
+        }
+    }
+
+#endif
+
+    key.data = (u_char *) dgram.sockaddr;
+    key.len = dgram.socklen;
+
+#if (NGX_HAVE_UNIX_DOMAIN)
+
+    if (dgram.sockaddr->sa_family == AF_UNIX) {
+        struct sockaddr_un *saun = (struct sockaddr_un *) dgram.sockaddr;
+
+        if (dgram.socklen <= (socklen_t) offsetof(struct sockaddr_un,
+                                                  sun_path)
+            || saun->sun_path[0] == '\0')
+        {
+            ngx_log_debug0(NGX_LOG_DEBUG_EVENT, ngx_cycle->log, 0,
+                           "unbound unix socket");
+            key.len = 0;
+        }
+    }
+
+#endif
+
+#if (NGX_QUIC)
+    if (ls->quic) {
+        if (ngx_quic_get_packet_dcid(ev->log, buffer, n, &key) != NGX_OK) {
+            return NGX_ERROR;
+        }
+    }
+#endif
+
+    c = ngx_lookup_udp_connection(ls, &key, local_sockaddr, local_socklen);
+
+    if (c) {
+
+#if (NGX_DEBUG)
+        if (c->log->log_level & NGX_LOG_DEBUG_EVENT) {
+            ngx_log_handler_pt  handler;
+
+            handler = c->log->handler;
+            c->log->handler = NULL;
+
+            ngx_log_debug2(NGX_LOG_DEBUG_EVENT, c->log, 0,
+                           "recvmsg: fd:%d n:%z", c->fd, n);
+
+            c->log->handler = handler;
+        }
+#endif
+
+        ngx_memzero(&buf, sizeof(ngx_buf_t));
+
+        buf.pos = buffer;
+        buf.last = buffer + n;
+        buf.start = buf.pos;
+        buf.end = buffer + sizeof(buffer);
+
+        rev = c->read;
+
+        dgram.buffer = &buf;
+
+        c->udp->dgram = &dgram;
+
+        rev->ready = 1;
+        rev->active = 0;
+
+        rev->handler(rev);
+
+        if (c->udp) {
+            c->udp->dgram = NULL;
+        }
+
+        rev->ready = 0;
+        rev->active = 1;
+
+        return NGX_OK;
+    }
+
+#if (NGX_STAT_STUB)
+    (void) ngx_atomic_fetch_add(ngx_stat_accepted, 1);
+#endif
+
+    ngx_accept_disabled = ngx_cycle->connection_n / 8
+                          - ngx_cycle->free_connection_n;
+
+    c = ngx_get_connection(lc->fd, ev->log);
+    if (c == NULL) {
+        return NGX_ERROR;
+    }
+
+    c->shared = 1;
+    c->type = SOCK_DGRAM;
+    c->socklen = dgram.socklen;
+
+#if (NGX_STAT_STUB)
+    (void) ngx_atomic_fetch_add(ngx_stat_active, 1);
+#endif
+
+    c->pool = ngx_create_pool(ls->pool_size, ev->log);
+    if (c->pool == NULL) {
+        ngx_close_accepted_udp_connection(c);
+        return NGX_ERROR;
+    }
+
+    len = dgram.socklen;
+
+#if (NGX_QUIC)
+    if (ls->quic) {
+        len = NGX_SOCKADDRLEN;
+    }
+#endif
+
+    c->sockaddr = ngx_palloc(c->pool, len);
+    if (c->sockaddr == NULL) {
+        ngx_close_accepted_udp_connection(c);
+        return NGX_ERROR;
+    }
+
+    ngx_memcpy(c->sockaddr, dgram.sockaddr, dgram.socklen);
+
+    log = ngx_palloc(c->pool, sizeof(ngx_log_t));
+    if (log == NULL) {
+        ngx_close_accepted_udp_connection(c);
+        return NGX_ERROR;
+    }
+
+    *log = ls->log;
+
+    c->recv = ngx_udp_shared_recv;
+    c->send = ngx_udp_send;
+    c->send_chain = ngx_udp_send_chain;
+
+    c->log = log;
+    c->pool->log = log;
+    c->listening = ls;
+
+    if (local_sockaddr == &lsa.sockaddr) {
+        local_sockaddr = ngx_palloc(c->pool, local_socklen);
+        if (local_sockaddr == NULL) {
+            ngx_close_accepted_udp_connection(c);
+            return NGX_ERROR;
+        }
+
+        ngx_memcpy(local_sockaddr, &lsa, local_socklen);
+    }
+
+    c->local_sockaddr = local_sockaddr;
+    c->local_socklen = local_socklen;
+
+    c->buffer = ngx_create_temp_buf(c->pool, n);
+    if (c->buffer == NULL) {
+        ngx_close_accepted_udp_connection(c);
+        return NGX_ERROR;
+    }
+
+    c->buffer->last = ngx_cpymem(c->buffer->last, buffer, n);
+
+    rev = c->read;
+    wev = c->write;
+
+    rev->active = 1;
+    wev->ready = 1;
+
+    rev->log = log;
+    wev->log = log;
+
+    /*
+     * TODO: MT: - ngx_atomic_fetch_add()
+     *             or protection by critical section or light mutex
+     *
+     * TODO: MP: - allocated in a shared memory
+     *           - ngx_atomic_fetch_add()
+     *             or protection by critical section or light mutex
+     */
+
+    c->number = ngx_atomic_fetch_add(ngx_connection_counter, 1);
+
+    c->start_time = ngx_current_msec;
+
+#if (NGX_STAT_STUB)
+    (void) ngx_atomic_fetch_add(ngx_stat_handled, 1);
+#endif
+
+    if (ls->addr_ntop) {
+        c->addr_text.data = ngx_pnalloc(c->pool, ls->addr_text_max_len);
+        if (c->addr_text.data == NULL) {
+            ngx_close_accepted_udp_connection(c);
+            return NGX_ERROR;
+        }
+
+        c->addr_text.len = ngx_sock_ntop(c->sockaddr, c->socklen,
+                                         c->addr_text.data,
+                                         ls->addr_text_max_len, 0);
+        if (c->addr_text.len == 0) {
+            ngx_close_accepted_udp_connection(c);
+            return NGX_ERROR;
+        }
+    }
+
+#if (NGX_DEBUG)
+    {
+    ngx_str_t  addr;
+    u_char     text[NGX_SOCKADDR_STRLEN];
+
+    ngx_debug_accepted_connection(ecf, c);
+
+    if (log->log_level & NGX_LOG_DEBUG_EVENT) {
+        addr.data = text;
+        addr.len = ngx_sock_ntop(c->sockaddr, c->socklen, text,
+                                 NGX_SOCKADDR_STRLEN, 1);
+
+        ngx_log_debug4(NGX_LOG_DEBUG_EVENT, log, 0,
+                       "*%uA recvmsg: %V fd:%d n:%z",
+                       c->number, &addr, c->fd, n);
+    }
+
+    }
+#endif
+
+    if (ngx_create_udp_connection(c) != NGX_OK) {
+        ngx_close_accepted_udp_connection(c);
+        return NGX_ERROR;
+    }
+
+    log->data = NULL;
+    log->handler = NULL;
+
+    ls->handler(c);
+
+    return NGX_OK;
+}
+
+
+#if (NGX_HAVE_UDP_RECVMMSG)
+
+void
+ngx_event_recvmsg(ngx_event_t *ev)
+{
+    ssize_t            n;
+    ngx_err_t          err;
+    struct iovec       iov[NGX_UDP_RECVMMSG_MAX];
+    struct mmsghdr     msgs[NGX_UDP_RECVMMSG_MAX];
+    ngx_sockaddr_t     sa[NGX_UDP_RECVMMSG_MAX];
+    ngx_listening_t   *ls;
+    ngx_event_conf_t  *ecf;
+    ngx_connection_t  *lc;
+    static u_char      buffer[NGX_UDP_RECVMMSG_MAX][65535];
+    ngx_int_t          i;
+
+#if (NGX_HAVE_ADDRINFO_CMSG)
+    u_char             msg_control[NGX_UDP_RECVMMSG_MAX][CMSG_SPACE(sizeof(ngx_addrinfo_t))];
+#endif
+
+    if (ev->timedout) {
+        if (ngx_enable_accept_events((ngx_cycle_t *) ngx_cycle) != NGX_OK) {
+            return;
+        }
+
+        ev->timedout = 0;
+    }
+
+    ecf = ngx_event_get_conf(ngx_cycle->conf_ctx, ngx_event_core_module);
+
+    if (!(ngx_event_flags & NGX_USE_KQUEUE_EVENT)) {
+        ev->available = ecf->multi_accept;
+    }
+
+    lc = ev->data;
+    ls = lc->listening;
+    ev->ready = 0;
+
+    ngx_log_debug2(NGX_LOG_DEBUG_EVENT, ev->log, 0,
+                   "recvmsg on %V, ready: %d", &ls->addr_text, ev->available);
+
+    do {
+        ngx_memzero(msgs, sizeof(msgs));
+
+#if (NGX_HAVE_ADDRINFO_CMSG)
+        ngx_memzero(msg_control, sizeof(msg_control));
+#endif
+
+        for (i = 0; i < NGX_UDP_RECVMMSG_MAX; i++) {
+            iov[i].iov_base = buffer[i];
+            iov[i].iov_len = sizeof(buffer[i]);
+
+            msgs[i].msg_hdr.msg_name = &sa[i];
+            msgs[i].msg_hdr.msg_namelen = sizeof(ngx_sockaddr_t);
+
+            msgs[i].msg_hdr.msg_iov = &iov[i];
+            msgs[i].msg_hdr.msg_iovlen = 1;
+
+#if (NGX_HAVE_ADDRINFO_CMSG)
+            if (ls->wildcard) {
+                msgs[i].msg_hdr.msg_control = &msg_control[i];
+                msgs[i].msg_hdr.msg_controllen = sizeof(msg_control[i]);
+           }
+#endif
+        }
+
+        n = recvmmsg(lc->fd, msgs, NGX_UDP_RECVMMSG_MAX, 0, NULL);
+
+        if (n == -1) {
+            err = ngx_socket_errno;
+
+            if (err == NGX_EAGAIN) {
+                ngx_log_debug0(NGX_LOG_DEBUG_EVENT, ev->log, err,
+                               "recvmsg() not ready");
+                return;
+            }
+
+            ngx_log_error(NGX_LOG_ALERT, ev->log, err, "recvmsg() failed");
+
+            return;
+        }
+
+        for (i = 0; i < n; i++) {
+
+#if (NGX_HAVE_ADDRINFO_CMSG)
+            if (msgs[i].msg_hdr.msg_flags & (MSG_TRUNC|MSG_CTRUNC)) {
+                ngx_log_error(NGX_LOG_ALERT, ev->log, 0,
+                              "recvmsg() truncated data");
+                continue;
+            }
+#endif
+
+            (void) ngx_event_process_packet(ev, &msgs[i].msg_hdr, buffer[i], msgs[i].msg_len);
+
+            if (ngx_event_flags & NGX_USE_KQUEUE_EVENT) {
+                ev->available -= n;
+            }
+        }
+
+    } while (ev->available);
+}
+
+#else
+
+void
+ngx_event_recvmsg(ngx_event_t *ev)
+{
+    ssize_t            n;
+    ngx_err_t          err;
+    struct iovec       iov[1];
+    struct msghdr      msg;
+    ngx_sockaddr_t     sa;
+    ngx_listening_t   *ls;
+    ngx_event_conf_t  *ecf;
+    ngx_connection_t  *lc;
     static u_char      buffer[65535];
 
 #if (NGX_HAVE_ADDRINFO_CMSG)
@@ -110,274 +506,7 @@ ngx_event_recvmsg(ngx_event_t *ev)
         }
 #endif
 
-        dgram.sockaddr = msg.msg_name;
-        dgram.socklen = msg.msg_namelen;
-
-        if (dgram.socklen > (socklen_t) sizeof(ngx_sockaddr_t)) {
-            dgram.socklen = sizeof(ngx_sockaddr_t);
-        }
-
-        if (dgram.socklen == 0) {
-
-            /*
-             * on Linux recvmsg() returns zero msg_namelen
-             * when receiving packets from unbound AF_UNIX sockets
-             */
-
-            dgram.socklen = sizeof(struct sockaddr);
-            ngx_memzero(&sa, sizeof(struct sockaddr));
-            sa.sockaddr.sa_family = ls->sockaddr->sa_family;
-        }
-
-        local_sockaddr = ls->sockaddr;
-        local_socklen = ls->socklen;
-
-#if (NGX_HAVE_ADDRINFO_CMSG)
-
-        if (ls->wildcard) {
-            struct cmsghdr  *cmsg;
-
-            ngx_memcpy(&lsa, local_sockaddr, local_socklen);
-            local_sockaddr = &lsa.sockaddr;
-
-            for (cmsg = CMSG_FIRSTHDR(&msg);
-                 cmsg != NULL;
-                 cmsg = CMSG_NXTHDR(&msg, cmsg))
-            {
-                if (ngx_get_srcaddr_cmsg(cmsg, local_sockaddr) == NGX_OK) {
-                    break;
-                }
-            }
-        }
-
-#endif
-
-        key.data = (u_char *) dgram.sockaddr;
-        key.len = dgram.socklen;
-
-#if (NGX_HAVE_UNIX_DOMAIN)
-
-        if (dgram.sockaddr->sa_family == AF_UNIX) {
-            struct sockaddr_un *saun = (struct sockaddr_un *) dgram.sockaddr;
-
-            if (dgram.socklen <= (socklen_t) offsetof(struct sockaddr_un,
-                                                      sun_path)
-                || saun->sun_path[0] == '\0')
-            {
-                ngx_log_debug0(NGX_LOG_DEBUG_EVENT, ngx_cycle->log, 0,
-                               "unbound unix socket");
-                key.len = 0;
-            }
-        }
-
-#endif
-
-#if (NGX_QUIC)
-        if (ls->quic) {
-            if (ngx_quic_get_packet_dcid(ev->log, buffer, n, &key) != NGX_OK) {
-                goto next;
-            }
-        }
-#endif
-
-        c = ngx_lookup_udp_connection(ls, &key, local_sockaddr, local_socklen);
-
-        if (c) {
-
-#if (NGX_DEBUG)
-            if (c->log->log_level & NGX_LOG_DEBUG_EVENT) {
-                ngx_log_handler_pt  handler;
-
-                handler = c->log->handler;
-                c->log->handler = NULL;
-
-                ngx_log_debug2(NGX_LOG_DEBUG_EVENT, c->log, 0,
-                               "recvmsg: fd:%d n:%z", c->fd, n);
-
-                c->log->handler = handler;
-            }
-#endif
-
-            ngx_memzero(&buf, sizeof(ngx_buf_t));
-
-            buf.pos = buffer;
-            buf.last = buffer + n;
-            buf.start = buf.pos;
-            buf.end = buffer + sizeof(buffer);
-
-            rev = c->read;
-
-            dgram.buffer = &buf;
-
-            c->udp->dgram = &dgram;
-
-            rev->ready = 1;
-            rev->active = 0;
-
-            rev->handler(rev);
-
-            if (c->udp) {
-                c->udp->dgram = NULL;
-            }
-
-            rev->ready = 0;
-            rev->active = 1;
-
-            goto next;
-        }
-
-#if (NGX_STAT_STUB)
-        (void) ngx_atomic_fetch_add(ngx_stat_accepted, 1);
-#endif
-
-        ngx_accept_disabled = ngx_cycle->connection_n / 8
-                              - ngx_cycle->free_connection_n;
-
-        c = ngx_get_connection(lc->fd, ev->log);
-        if (c == NULL) {
-            return;
-        }
-
-        c->shared = 1;
-        c->type = SOCK_DGRAM;
-        c->socklen = dgram.socklen;
-
-#if (NGX_STAT_STUB)
-        (void) ngx_atomic_fetch_add(ngx_stat_active, 1);
-#endif
-
-        c->pool = ngx_create_pool(ls->pool_size, ev->log);
-        if (c->pool == NULL) {
-            ngx_close_accepted_udp_connection(c);
-            return;
-        }
-
-        len = dgram.socklen;
-
-#if (NGX_QUIC)
-        if (ls->quic) {
-            len = NGX_SOCKADDRLEN;
-        }
-#endif
-
-        c->sockaddr = ngx_palloc(c->pool, len);
-        if (c->sockaddr == NULL) {
-            ngx_close_accepted_udp_connection(c);
-            return;
-        }
-
-        ngx_memcpy(c->sockaddr, dgram.sockaddr, dgram.socklen);
-
-        log = ngx_palloc(c->pool, sizeof(ngx_log_t));
-        if (log == NULL) {
-            ngx_close_accepted_udp_connection(c);
-            return;
-        }
-
-        *log = ls->log;
-
-        c->recv = ngx_udp_shared_recv;
-        c->send = ngx_udp_send;
-        c->send_chain = ngx_udp_send_chain;
-
-        c->log = log;
-        c->pool->log = log;
-        c->listening = ls;
-
-        if (local_sockaddr == &lsa.sockaddr) {
-            local_sockaddr = ngx_palloc(c->pool, local_socklen);
-            if (local_sockaddr == NULL) {
-                ngx_close_accepted_udp_connection(c);
-                return;
-            }
-
-            ngx_memcpy(local_sockaddr, &lsa, local_socklen);
-        }
-
-        c->local_sockaddr = local_sockaddr;
-        c->local_socklen = local_socklen;
-
-        c->buffer = ngx_create_temp_buf(c->pool, n);
-        if (c->buffer == NULL) {
-            ngx_close_accepted_udp_connection(c);
-            return;
-        }
-
-        c->buffer->last = ngx_cpymem(c->buffer->last, buffer, n);
-
-        rev = c->read;
-        wev = c->write;
-
-        rev->active = 1;
-        wev->ready = 1;
-
-        rev->log = log;
-        wev->log = log;
-
-        /*
-         * TODO: MT: - ngx_atomic_fetch_add()
-         *             or protection by critical section or light mutex
-         *
-         * TODO: MP: - allocated in a shared memory
-         *           - ngx_atomic_fetch_add()
-         *             or protection by critical section or light mutex
-         */
-
-        c->number = ngx_atomic_fetch_add(ngx_connection_counter, 1);
-
-        c->start_time = ngx_current_msec;
-
-#if (NGX_STAT_STUB)
-        (void) ngx_atomic_fetch_add(ngx_stat_handled, 1);
-#endif
-
-        if (ls->addr_ntop) {
-            c->addr_text.data = ngx_pnalloc(c->pool, ls->addr_text_max_len);
-            if (c->addr_text.data == NULL) {
-                ngx_close_accepted_udp_connection(c);
-                return;
-            }
-
-            c->addr_text.len = ngx_sock_ntop(c->sockaddr, c->socklen,
-                                             c->addr_text.data,
-                                             ls->addr_text_max_len, 0);
-            if (c->addr_text.len == 0) {
-                ngx_close_accepted_udp_connection(c);
-                return;
-            }
-        }
-
-#if (NGX_DEBUG)
-        {
-        ngx_str_t  addr;
-        u_char     text[NGX_SOCKADDR_STRLEN];
-
-        ngx_debug_accepted_connection(ecf, c);
-
-        if (log->log_level & NGX_LOG_DEBUG_EVENT) {
-            addr.data = text;
-            addr.len = ngx_sock_ntop(c->sockaddr, c->socklen, text,
-                                     NGX_SOCKADDR_STRLEN, 1);
-
-            ngx_log_debug4(NGX_LOG_DEBUG_EVENT, log, 0,
-                           "*%uA recvmsg: %V fd:%d n:%z",
-                           c->number, &addr, c->fd, n);
-        }
-
-        }
-#endif
-
-        if (ngx_create_udp_connection(c) != NGX_OK) {
-            ngx_close_accepted_udp_connection(c);
-            return;
-        }
-
-        log->data = NULL;
-        log->handler = NULL;
-
-        ls->handler(c);
-
-    next:
+        (void) ngx_event_process_packet(ev, &msg, buffer, n);
 
         if (ngx_event_flags & NGX_USE_KQUEUE_EVENT) {
             ev->available -= n;
@@ -385,6 +514,8 @@ ngx_event_recvmsg(ngx_event_t *ev)
 
     } while (ev->available);
 }
+
+#endif
 
 
 static void
