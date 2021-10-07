@@ -171,6 +171,7 @@ ngx_http_v3_uni_read_handler(ngx_event_t *rev)
     ngx_buf_t                  b;
     ngx_int_t                  rc;
     ngx_connection_t          *c;
+    ngx_http_v3_session_t     *h3c;
     ngx_http_v3_uni_stream_t  *us;
 
     c = rev->data;
@@ -206,6 +207,14 @@ ngx_http_v3_uni_read_handler(ngx_event_t *rev)
 
         b.pos = buf;
         b.last = buf + n;
+
+        h3c = ngx_http_v3_get_session(c);
+        h3c->total_bytes += n;
+
+        if (ngx_http_v3_check_flood(c) != NGX_OK) {
+            ngx_http_v3_close_uni_stream(c);
+            return;
+        }
 
         rc = ngx_http_v3_parse_uni(c, &us->parse, &b);
 
@@ -284,6 +293,9 @@ ngx_http_v3_create_push_stream(ngx_connection_t *c, uint64_t push_id)
 
     ngx_quic_add_exemptions(sc, n);
 
+    h3c = ngx_http_v3_get_session(c);
+    h3c->total_bytes += n;
+
     if (sc->send(sc, buf, n) != (ssize_t) n) {
         goto failed;
     }
@@ -293,7 +305,6 @@ ngx_http_v3_create_push_stream(ngx_connection_t *c, uint64_t push_id)
         goto failed;
     }
 
-    h3c = ngx_http_v3_get_session(c);
     h3c->npushing++;
 
     cln->handler = ngx_http_v3_push_cleanup;
@@ -387,6 +398,9 @@ ngx_http_v3_get_uni_stream(ngx_connection_t *c, ngx_uint_t type)
 
     ngx_quic_add_exemptions(sc, n);
 
+    h3c = ngx_http_v3_get_session(c);
+    h3c->total_bytes += n;
+
     if (sc->send(sc, buf, n) != (ssize_t) n) {
         goto failed;
     }
@@ -407,6 +421,7 @@ ngx_http_v3_send_settings(ngx_connection_t *c)
     u_char                  *p, buf[NGX_HTTP_V3_VARLEN_INT_LEN * 6];
     size_t                   n;
     ngx_connection_t        *cc;
+    ngx_http_v3_session_t   *h3c;
     ngx_http_v3_srv_conf_t  *h3scf;
 
     ngx_log_debug0(NGX_LOG_DEBUG_HTTP, c->log, 0, "http3 send settings");
@@ -437,6 +452,9 @@ ngx_http_v3_send_settings(ngx_connection_t *c)
 
     ngx_quic_add_exemptions(cc, n);
 
+    h3c = ngx_http_v3_get_session(c);
+    h3c->total_bytes += n;
+
     if (cc->send(cc, buf, n) != (ssize_t) n) {
         goto failed;
     }
@@ -454,9 +472,10 @@ failed:
 ngx_int_t
 ngx_http_v3_send_goaway(ngx_connection_t *c, uint64_t id)
 {
-    u_char            *p, buf[NGX_HTTP_V3_VARLEN_INT_LEN * 3];
-    size_t             n;
-    ngx_connection_t  *cc;
+    u_char                 *p, buf[NGX_HTTP_V3_VARLEN_INT_LEN * 3];
+    size_t                  n;
+    ngx_connection_t       *cc;
+    ngx_http_v3_session_t  *h3c;
 
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0, "http3 send goaway %uL", id);
 
@@ -472,6 +491,9 @@ ngx_http_v3_send_goaway(ngx_connection_t *c, uint64_t id)
     n = p - buf;
 
     ngx_quic_add_exemptions(cc, n);
+
+    h3c = ngx_http_v3_get_session(c);
+    h3c->total_bytes += n;
 
     if (cc->send(cc, buf, n) != (ssize_t) n) {
         goto failed;
@@ -490,9 +512,10 @@ failed:
 ngx_int_t
 ngx_http_v3_send_ack_section(ngx_connection_t *c, ngx_uint_t stream_id)
 {
-    u_char             buf[NGX_HTTP_V3_PREFIX_INT_LEN];
-    size_t             n;
-    ngx_connection_t  *dc;
+    u_char                  buf[NGX_HTTP_V3_PREFIX_INT_LEN];
+    size_t                  n;
+    ngx_connection_t       *dc;
+    ngx_http_v3_session_t  *h3c;
 
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0,
                    "http3 client ack section %ui", stream_id);
@@ -507,6 +530,9 @@ ngx_http_v3_send_ack_section(ngx_connection_t *c, ngx_uint_t stream_id)
 
     ngx_quic_add_exemptions(dc, n);
 
+    h3c = ngx_http_v3_get_session(c);
+    h3c->total_bytes += n;
+
     if (dc->send(dc, buf, n) != (ssize_t) n) {
         ngx_http_v3_close_uni_stream(dc);
         return NGX_ERROR;
@@ -519,9 +545,10 @@ ngx_http_v3_send_ack_section(ngx_connection_t *c, ngx_uint_t stream_id)
 ngx_int_t
 ngx_http_v3_send_cancel_stream(ngx_connection_t *c, ngx_uint_t stream_id)
 {
-    u_char             buf[NGX_HTTP_V3_PREFIX_INT_LEN];
-    size_t             n;
-    ngx_connection_t  *dc;
+    u_char                  buf[NGX_HTTP_V3_PREFIX_INT_LEN];
+    size_t                  n;
+    ngx_connection_t       *dc;
+    ngx_http_v3_session_t  *h3c;
 
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0,
                    "http3 client cancel stream %ui", stream_id);
@@ -536,6 +563,9 @@ ngx_http_v3_send_cancel_stream(ngx_connection_t *c, ngx_uint_t stream_id)
 
     ngx_quic_add_exemptions(dc, n);
 
+    h3c = ngx_http_v3_get_session(c);
+    h3c->total_bytes += n;
+
     if (dc->send(dc, buf, n) != (ssize_t) n) {
         ngx_http_v3_close_uni_stream(dc);
         return NGX_ERROR;
@@ -548,9 +578,10 @@ ngx_http_v3_send_cancel_stream(ngx_connection_t *c, ngx_uint_t stream_id)
 ngx_int_t
 ngx_http_v3_send_inc_insert_count(ngx_connection_t *c, ngx_uint_t inc)
 {
-    u_char             buf[NGX_HTTP_V3_PREFIX_INT_LEN];
-    size_t             n;
-    ngx_connection_t  *dc;
+    u_char                  buf[NGX_HTTP_V3_PREFIX_INT_LEN];
+    size_t                  n;
+    ngx_connection_t       *dc;
+    ngx_http_v3_session_t  *h3c;
 
     ngx_log_debug1(NGX_LOG_DEBUG_HTTP, c->log, 0,
                    "http3 client increment insert count %ui", inc);
@@ -564,6 +595,9 @@ ngx_http_v3_send_inc_insert_count(ngx_connection_t *c, ngx_uint_t inc)
     n = (u_char *) ngx_http_v3_encode_prefix_int(buf, inc, 6) - buf;
 
     ngx_quic_add_exemptions(dc, n);
+
+    h3c = ngx_http_v3_get_session(c);
+    h3c->total_bytes += n;
 
     if (dc->send(dc, buf, n) != (ssize_t) n) {
         ngx_http_v3_close_uni_stream(dc);
