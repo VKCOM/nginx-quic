@@ -439,7 +439,6 @@ ngx_http_quic_create_srv_conf(ngx_conf_t *cf)
     conf->retry = NGX_CONF_UNSET;
     conf->gso_enabled = NGX_CONF_UNSET;
     conf->migration_close_connection = NGX_CONF_UNSET;
-    conf->require_alpn = 1;
 
 #if (NGX_HAVE_IP_MTU_DISCOVER)
     conf->mtu = NGX_CONF_UNSET;

@@ -60,7 +60,6 @@ typedef struct {
     ngx_quic_tp_t              tp;
     ngx_flag_t                 retry;
     ngx_flag_t                 gso_enabled;
-    ngx_flag_t                 require_alpn;
     ngx_flag_t                 migration_close_connection;
     ngx_str_t                  host_key;
     size_t                     stream_buf_size;
