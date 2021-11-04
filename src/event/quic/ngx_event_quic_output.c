@@ -564,7 +564,7 @@ ngx_quic_output_packet(ngx_connection_t *c, ngx_quic_send_ctx_t *ctx,
     ngx_uint_t              nframes, has_pr;
     ngx_msec_t              now;
     ngx_queue_t            *q;
-    ngx_quic_frame_t       *f;
+    ngx_quic_frame_t       *f, *first;
     ngx_quic_header_t       pkt;
     ngx_quic_connection_t  *qc;
     static u_char           src[NGX_QUIC_MAX_UDP_PAYLOAD_SIZE];
@@ -595,6 +595,7 @@ ngx_quic_output_packet(ngx_connection_t *c, ngx_quic_send_ctx_t *ctx,
     p = src;
     len = 0;
     has_pr = 0;
+    first = NULL;
 
     q = ngx_queue_head(&ctx->fqueues);
     fqueue = ngx_queue_data(q, ngx_quic_fqueue_t, queue);
@@ -659,6 +660,10 @@ ngx_quic_output_packet(ngx_connection_t *c, ngx_quic_send_ctx_t *ctx,
 
         ngx_quic_queue_frame_remove(qc, fqueue->frames, f);
         ngx_queue_insert_tail(&ctx->sending, &f->queue);
+
+        if (first == NULL) {
+            first = f;
+        }
 
         fqueue->count++;
 
@@ -770,13 +775,10 @@ ngx_quic_output_packet(ngx_connection_t *c, ngx_quic_send_ctx_t *ctx,
     ctx->pnum++;
 
     if (pkt.need_ack) {
-        q = ngx_queue_head(&ctx->sending);
-        f = ngx_queue_data(q, ngx_quic_frame_t, queue);
-
-        f->plen = res.len;
+        first->plen = res.len;
     }
 
-    for (q = ngx_queue_head(&ctx->sending); q != ngx_queue_sentinel(&ctx->sending); q = ngx_queue_next(q)) {
+    for (q = &first->queue; q != ngx_queue_sentinel(&ctx->sending); q = ngx_queue_next(q)) {
         f = ngx_queue_data(q, ngx_quic_frame_t, queue);
         f->pkt_need_ack = pkt.need_ack;
     }
