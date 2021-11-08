@@ -723,7 +723,7 @@ ngx_quic_output_packet(ngx_connection_t *c, ngx_quic_send_ctx_t *ctx,
 
     if (min || has_pr) {
         hlen = EVP_GCM_TLS_TAG_LEN
-               + ngx_quic_create_header(&pkt, NULL, out.len + EVP_GCM_TLS_TAG_LEN, NULL);
+               + ngx_quic_create_header(&pkt, NULL, out.len, NULL);
 
         /*
          * RFC 9000, 8.2.1.  Initiating Path Validation
@@ -741,10 +741,6 @@ ngx_quic_output_packet(ngx_connection_t *c, ngx_quic_send_ctx_t *ctx,
             min = ngx_max(NGX_QUIC_MIN_INITIAL_SIZE, min);
         }
 
-        if (min > max) {
-            min = max;
-        }
-
         if (min > hlen + pad_len) {
             pad_len = min - hlen;
         }
@@ -752,8 +748,8 @@ ngx_quic_output_packet(ngx_connection_t *c, ngx_quic_send_ctx_t *ctx,
 
     if (out.len < pad_len) {
         /* compensate for potentially enlarged header in Length bytes */
-        pad_len -= ngx_quic_create_header(&pkt, NULL, pad_len + EVP_GCM_TLS_TAG_LEN, NULL)
-                   - ngx_quic_create_header(&pkt, NULL, out.len + EVP_GCM_TLS_TAG_LEN, NULL);
+        pad_len -= ngx_quic_create_header(&pkt, NULL, pad_len, NULL)
+                   - ngx_quic_create_header(&pkt, NULL, out.len, NULL);
         ngx_memset(p, NGX_QUIC_FT_PADDING, pad_len - out.len);
         out.len = pad_len;
     }
@@ -1300,7 +1296,6 @@ ngx_quic_frame_sendto(ngx_connection_t *c, ngx_quic_frame_t *frame,
     size_t min, struct sockaddr *sockaddr, socklen_t socklen)
 {
     ssize_t                 len;
-    size_t                  hlen, pad_len = 0;
     ngx_str_t               res;
     ngx_quic_header_t       pkt;
     ngx_quic_send_ctx_t    *ctx;
@@ -1325,6 +1320,11 @@ ngx_quic_frame_sendto(ngx_connection_t *c, ngx_quic_frame_t *frame,
         return -1;
     }
 
+    if (len < (ssize_t) min) {
+        ngx_memset(src + len, NGX_QUIC_FT_PADDING, min - len);
+        len = min;
+    }
+
     pkt.keys = qc->keys;
     pkt.flags = NGX_QUIC_PKT_FIXED_BIT;
 
@@ -1345,19 +1345,6 @@ ngx_quic_frame_sendto(ngx_connection_t *c, ngx_quic_frame_t *frame,
 
     pkt.scid.data = qc->socket->sid.id;
     pkt.scid.len = qc->socket->sid.len;
-
-    hlen = EVP_GCM_TLS_TAG_LEN
-            + ngx_quic_create_header(&pkt, NULL, len + EVP_GCM_TLS_TAG_LEN, NULL);
-
-    if (min > hlen + len) {
-        hlen = EVP_GCM_TLS_TAG_LEN
-            + ngx_quic_create_header(&pkt, NULL, min + EVP_GCM_TLS_TAG_LEN, NULL);
-
-        pad_len = min - (hlen + len);
-
-        ngx_memset(src + len, NGX_QUIC_FT_PADDING, pad_len);
-        len = min - hlen;
-    }
 
     pkt.payload.data = src;
     pkt.payload.len = len;
