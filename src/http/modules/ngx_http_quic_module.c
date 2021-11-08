@@ -209,6 +209,15 @@ static ngx_command_t  ngx_http_quic_commands[] = {
       NULL },
 #endif
 
+#if (NGX_HAVE_UDP_SENDMMSG)
+    { ngx_string("quic_sendmmsg"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_CONF_FLAG,
+      ngx_conf_set_flag_slot,
+      NGX_HTTP_SRV_CONF_OFFSET,
+      offsetof(ngx_quic_conf_t, sendmmsg_enabled),
+      NULL },
+#endif
+
       ngx_null_command
 };
 
@@ -449,6 +458,10 @@ ngx_http_quic_create_srv_conf(ngx_conf_t *cf)
     conf->stream_shuffle = NGX_CONF_UNSET_SIZE;
     conf->nodelay = NGX_CONF_UNSET;
 
+#if (NGX_HAVE_UDP_SENDMMSG)
+    conf->sendmmsg_enabled = NGX_CONF_UNSET;
+#endif
+
     return conf;
 }
 
@@ -526,6 +539,10 @@ ngx_http_quic_merge_srv_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_conf_merge_value(conf->nodelay, prev->nodelay, 0);
 
     ngx_conf_merge_uint_value(conf->stream_shuffle, prev->stream_shuffle, 8);
+
+#if (NGX_HAVE_UDP_SENDMMSG)
+    ngx_conf_merge_value(conf->sendmmsg_enabled, prev->sendmmsg_enabled, 1);
+#endif
 
     if (conf->migration_close_connection && !conf->tp.disable_active_migration) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,

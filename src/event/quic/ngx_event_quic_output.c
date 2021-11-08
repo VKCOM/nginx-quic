@@ -37,6 +37,9 @@
 
 #define NGX_QUIC_SOCKET_RETRY_DELAY      10 /* ms, for NGX_AGAIN on write */
 
+#if (NGX_HAVE_UDP_SENDMMSG)
+#define NGX_QUIC_MAX_SENDMMSG            64
+#endif
 
 static ngx_int_t ngx_quic_socket_output(ngx_connection_t *c,
     ngx_quic_socket_t *qsock);
@@ -52,6 +55,12 @@ static ngx_int_t ngx_quic_create_segments(ngx_connection_t *c,
     ngx_quic_socket_t *qsock);
 static ssize_t ngx_quic_send_segments(ngx_connection_t *c, u_char *buf,
     size_t len, struct sockaddr *sockaddr, socklen_t socklen, size_t segment);
+#endif
+#if (NGX_HAVE_UDP_SENDMMSG)
+static ngx_uint_t ngx_quic_allow_sendmmsg(ngx_connection_t *c, ngx_quic_socket_t *qsock);
+static ngx_int_t ngx_quic_create_sendmmsg(ngx_connection_t *c, ngx_quic_socket_t *qsock);
+static ssize_t ngx_quic_sendmmsg(ngx_connection_t *c, struct iovec *iov,
+    struct sockaddr *sockaddr, socklen_t socklen, ngx_int_t nseg);
 #endif
 static ssize_t ngx_quic_output_packet(ngx_connection_t *c,
     ngx_quic_send_ctx_t *ctx, u_char *data, size_t max, size_t min,
@@ -119,6 +128,11 @@ ngx_quic_socket_output(ngx_connection_t *c, ngx_quic_socket_t *qsock)
 #if ((NGX_HAVE_UDP_SEGMENT) && (NGX_HAVE_MSGHDR_MSG_CONTROL))
     if (ngx_quic_allow_segmentation(c, qsock)) {
         rc = ngx_quic_create_segments(c, qsock);
+    } else
+#endif
+#if (NGX_HAVE_UDP_SENDMMSG)
+    if (ngx_quic_allow_sendmmsg(c, qsock)) {
+        rc = ngx_quic_create_sendmmsg(c, qsock);
     } else
 #endif
     {
@@ -249,7 +263,6 @@ ngx_quic_commit_send(ngx_connection_t *c, ngx_quic_send_ctx_t *ctx)
     cg = &qc->congestion;
 
     while (!ngx_queue_empty(&ctx->sending)) {
-
         q = ngx_queue_head(&ctx->sending);
         f = ngx_queue_data(q, ngx_quic_frame_t, queue);
 
@@ -512,6 +525,203 @@ ngx_quic_send_segments(ngx_connection_t *c, u_char *buf, size_t len,
 
 #endif
 
+
+#if (NGX_HAVE_UDP_SENDMMSG)
+
+static ngx_uint_t
+ngx_quic_allow_sendmmsg(ngx_connection_t *c, ngx_quic_socket_t *qsock)
+{
+    ngx_quic_connection_t  *qc;
+
+    qc = ngx_quic_get_connection(c);
+
+    if (!qc->conf->sendmmsg_enabled) {
+        return 0;
+    }
+
+    return 1;
+}
+
+
+static ngx_int_t
+ngx_quic_create_sendmmsg(ngx_connection_t *c, ngx_quic_socket_t *qsock)
+{
+    off_t                   max;
+    size_t                  len, min;
+    ssize_t                 n;
+    u_char                 *p, *dst;
+    ngx_uint_t              i, nseg, pad;
+    ngx_quic_path_t        *path;
+    ngx_quic_send_ctx_t    *ctx;
+    ngx_quic_congestion_t  *cg;
+    ngx_quic_connection_t  *qc;
+    uint64_t                preserved_pnum[NGX_QUIC_SEND_CTX_LAST];
+    ngx_quic_frame_t       *preserved_last_priority[NGX_QUIC_SEND_CTX_LAST];
+    struct iovec            iov[NGX_QUIC_MAX_SENDMMSG];
+    static u_char           bufs[NGX_QUIC_MAX_SENDMMSG][NGX_QUIC_MAX_UDP_PAYLOAD_SIZE];
+
+    qc = ngx_quic_get_connection(c);
+    cg = &qc->congestion;
+    path = qsock->path;
+    nseg = 0;
+
+    for (i = 0; i < NGX_QUIC_SEND_CTX_LAST; i++) {
+        ctx = &qc->send_ctx[i];
+
+        if (ngx_quic_generate_ack(c, ctx) != NGX_OK) {
+            return NGX_ERROR;
+        }
+
+        preserved_pnum[i] = ctx->pnum;
+        preserved_last_priority[i] = ctx->last_priority;
+    }
+
+    for ( ; ; ) {
+
+        dst = bufs[nseg];
+        p = dst;
+
+        len = ngx_min(qc->ctp.max_udp_payload_size,
+                      NGX_QUIC_MAX_UDP_PAYLOAD_SIZE);
+
+        if (path->state != NGX_QUIC_PATH_VALIDATED) {
+            max = path->received * 3;
+            max = (path->sent >= max) ? 0 : max - path->sent;
+
+            len = ngx_min(len, (size_t) max);
+        }
+
+        pad = ngx_quic_get_padding_level(c);
+
+        for (i = 0; i < NGX_QUIC_SEND_CTX_LAST; i++) {
+
+            ctx = &qc->send_ctx[i];
+
+            preserved_pnum[i] = ctx->pnum;
+            preserved_last_priority[i] = ctx->last_priority;
+
+            if (cg->in_flight >= cg->window && ctx->last_priority == NULL) {
+                continue;
+            }
+
+            min = (i == pad && p - dst < NGX_QUIC_MIN_INITIAL_SIZE)
+                  ? NGX_QUIC_MIN_INITIAL_SIZE - (p - dst) : 0;
+
+            if (min > len) {
+                continue;
+            }
+
+            n = ngx_quic_output_packet(c, ctx, p, len, min, qsock);
+            if (n == NGX_ERROR) {
+                return NGX_ERROR;
+            }
+
+            p += n;
+            len -= n;
+        }
+
+        len = p - dst;
+
+        if (len) {
+            iov[nseg].iov_base = dst;
+            iov[nseg].iov_len = len;
+
+            nseg++;
+        }
+
+        if (nseg == 0) {
+            break;
+        }
+
+        if (len == 0 || nseg == NGX_QUIC_MAX_SENDMMSG) {
+            n = ngx_quic_sendmmsg(c, iov, path->sockaddr,
+                                       path->socklen, nseg);
+
+            if (n == NGX_ERROR) {
+                return NGX_ERROR;
+            }
+
+            /* TODO: partial commit if n != nseg */
+
+            if (n == NGX_AGAIN) {
+                for (i = 0; i < NGX_QUIC_SEND_CTX_LAST; i++) {
+                    ngx_quic_revert_send(c, &qc->send_ctx[i], preserved_pnum[i], preserved_last_priority[i]);
+                }
+
+                ngx_add_timer(&qc->push, NGX_QUIC_SOCKET_RETRY_DELAY);
+                break;
+            }
+
+            for (i = 0; i < (ngx_uint_t) n; i++) {
+                path->sent += iov[i].iov_len;
+            }
+
+            for (i = 0; i < NGX_QUIC_SEND_CTX_LAST; i++) {
+                ngx_quic_commit_send(c, &qc->send_ctx[i]);
+
+                preserved_pnum[i] = ctx->pnum;
+                preserved_last_priority[i] = ctx->last_priority;
+            }
+
+            nseg = 0;
+        }
+    }
+
+    return NGX_OK;
+}
+
+
+static ssize_t
+ngx_quic_sendmmsg(ngx_connection_t *c, struct iovec *iov,
+    struct sockaddr *sockaddr, socklen_t socklen, ngx_int_t nseg)
+{
+    struct mmsghdr      msgs[NGX_QUIC_MAX_SENDMMSG];
+    ngx_int_t           n, i;
+
+#if defined(NGX_HAVE_ADDRINFO_CMSG)
+    struct cmsghdr     *cmsg;
+    char                msg_control[NGX_QUIC_MAX_SENDMMSG][CMSG_SPACE(sizeof(ngx_addrinfo_t))];
+#endif
+
+    ngx_memzero(msgs, sizeof(msgs));
+
+#if defined(NGX_HAVE_ADDRINFO_CMSG)
+    ngx_memzero(msg_control, sizeof(msg_control));
+#endif
+
+    for (i = 0; i < nseg; i++) {
+        msgs[i].msg_hdr.msg_iov = &iov[i];
+        msgs[i].msg_hdr.msg_iovlen = 1;
+
+        msgs[i].msg_hdr.msg_name = sockaddr;
+        msgs[i].msg_hdr.msg_namelen = socklen;
+
+#if defined(NGX_HAVE_ADDRINFO_CMSG)
+        if (c->listening && c->listening->wildcard && c->local_sockaddr) {
+
+            msgs[i].msg_hdr.msg_control = msg_control[i];
+            msgs[i].msg_hdr.msg_controllen = sizeof(msg_control[i]);
+
+            cmsg = CMSG_FIRSTHDR(&msgs[i].msg_hdr);
+
+            msgs[i].msg_hdr.msg_controllen = ngx_set_srcaddr_cmsg(cmsg, c->local_sockaddr);
+        }
+#endif
+    }
+
+    n = ngx_sendmmsg(c, msgs, nseg, 0);
+    if (n < 0) {
+        return n;
+    }
+
+    for (i = 0; i < n; i++) {
+        c->sent += iov[i].iov_len;
+    }
+
+    return n;
+}
+
+#endif
 
 
 static ngx_uint_t

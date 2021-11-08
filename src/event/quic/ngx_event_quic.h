@@ -76,6 +76,10 @@ typedef struct {
 
     uint64_t                   stream_shuffle;
     ngx_flag_t                 nodelay;
+
+#if (NGX_HAVE_UDP_SENDMMSG)
+    ngx_flag_t                 sendmmsg_enabled;
+#endif
 } ngx_quic_conf_t;
 
 

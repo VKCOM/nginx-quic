@@ -430,3 +430,55 @@ eintr:
 
     return n;
 }
+
+
+#if (NGX_HAVE_UDP_SENDMMSG)
+
+ngx_int_t
+ngx_sendmmsg(ngx_connection_t *c, struct mmsghdr *msgs, ngx_int_t count, int flags)
+{
+    ngx_int_t   n;
+    ngx_err_t   err;
+#if (NGX_DEBUG)
+    size_t      size;
+    ngx_int_t   i;
+#endif
+
+eintr:
+
+    n = sendmmsg(c->fd, msgs, count, flags);
+
+    if (n == -1) {
+        err = ngx_errno;
+
+        switch (err) {
+        case NGX_EAGAIN:
+            ngx_log_debug0(NGX_LOG_DEBUG_EVENT, c->log, err,
+                           "sendmmsg() not ready");
+            return NGX_AGAIN;
+
+        case NGX_EINTR:
+            ngx_log_debug0(NGX_LOG_DEBUG_EVENT, c->log, err,
+                           "sendmmsg() was interrupted");
+            goto eintr;
+
+        default:
+            c->write->error = 1;
+            ngx_connection_error(c, err, "sendmmsg() failed");
+            return NGX_ERROR;
+        }
+    }
+
+#if (NGX_DEBUG)
+    for (i = 0, size = 0; i < n; i++) {
+        size += msgs[i].msg_len;
+    }
+
+    ngx_log_debug2(NGX_LOG_DEBUG_EVENT, c->log, 0,
+                   "sendmmsg: %uz (%z)", size, n);
+#endif
+
+    return n;
+}
+
+#endif

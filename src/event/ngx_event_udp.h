@@ -63,6 +63,10 @@ ngx_int_t ngx_get_srcaddr_cmsg(struct cmsghdr *cmsg,
 
 void ngx_event_recvmsg(ngx_event_t *ev);
 ssize_t ngx_sendmsg(ngx_connection_t *c, struct msghdr *msg, int flags);
+#if (NGX_HAVE_UDP_SENDMMSG)
+ngx_int_t
+ngx_sendmmsg(ngx_connection_t *c, struct mmsghdr *msgs, ngx_int_t count, int flags);
+#endif
 void ngx_udp_rbtree_insert_value(ngx_rbtree_node_t *temp,
     ngx_rbtree_node_t *node, ngx_rbtree_node_t *sentinel);
 void ngx_insert_udp_connection(ngx_connection_t *c, ngx_udp_connection_t *udp,
