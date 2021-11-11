@@ -62,6 +62,9 @@ typedef struct {
     ngx_flag_t                 gso_enabled;
     ngx_flag_t                 migration_close_connection;
     ngx_str_t                  host_key;
+    ngx_int_t                  stream_close_code;
+    ngx_int_t                  stream_reject_code_uni;
+    ngx_int_t                  stream_reject_code_bidi;
     size_t                     stream_buf_size;
     size_t                     initial_window;
     size_t                     min_window;
