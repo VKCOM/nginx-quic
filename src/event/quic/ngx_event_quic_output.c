@@ -419,10 +419,8 @@ ngx_quic_create_segments(ngx_connection_t *c, ngx_quic_socket_t *qsock)
             }
 
             p += n;
+            nseg++;
 
-            if (n) {
-                nseg++;
-            }
         } else {
             n = 0;
         }
