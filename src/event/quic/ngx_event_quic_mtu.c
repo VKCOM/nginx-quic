@@ -61,8 +61,6 @@ ngx_quic_mtu_get_updated_probe_size(ngx_quic_mtu_t *mtu, uint64_t largest_sent_p
     }
 
     mtu->last_probe_length = ngx_quic_mtu_next_probe_packet_length(mtu);
-
-    mtu->packets_between_probes *= 2;
     mtu->next_probe_at = largest_sent_packet + mtu->packets_between_probes + 1;
 
     if (mtu->remaining_probe_count > 0) {
