@@ -448,8 +448,10 @@ ngx_http_quic_create_srv_conf(ngx_conf_t *cf)
     conf->min_window = NGX_CONF_UNSET_SIZE;
     conf->retry = NGX_CONF_UNSET;
     conf->gso_enabled = NGX_CONF_UNSET;
+#if (NGX_HTTP_V3)
     conf->stream_close_code = NGX_HTTP_V3_ERR_NO_ERROR;
     conf->stream_reject_code_bidi = NGX_HTTP_V3_ERR_REQUEST_REJECTED;
+#endif
     conf->migration_close_connection = NGX_CONF_UNSET;
 
 #if (NGX_HAVE_IP_MTU_DISCOVER)
