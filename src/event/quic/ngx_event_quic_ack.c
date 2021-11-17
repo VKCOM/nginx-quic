@@ -1229,7 +1229,7 @@ ngx_quic_generate_ack(ngx_connection_t *c, ngx_quic_send_ctx_t *ctx)
         delay = ngx_current_msec - ctx->ack_delay_start;
         qc = ngx_quic_get_connection(c);
 
-        if (ctx->send_ack < NGX_QUIC_MAX_ACK_GAP
+        if (!ctx->ack_immediately && ctx->send_ack < NGX_QUIC_MAX_ACK_GAP
             && delay < qc->tp.max_ack_delay)
         {
             if (!qc->push.timer_set && !qc->closing) {
@@ -1239,6 +1239,8 @@ ngx_quic_generate_ack(ngx_connection_t *c, ngx_quic_send_ctx_t *ctx)
 
             return NGX_OK;
         }
+
+        ctx->ack_immediately = 0;
     }
 
     if (ctx->pending_ack == NGX_QUIC_UNSET_PN) {

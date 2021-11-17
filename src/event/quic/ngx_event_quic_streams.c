@@ -880,6 +880,7 @@ ngx_quic_stream_cleanup_handler(void *data)
     ngx_quic_frame_t       *frame;
     ngx_quic_stream_t      *qs;
     ngx_quic_connection_t  *qc;
+    ngx_quic_send_ctx_t    *ctx;
 
     qs = c->quic;
     pc = qs->parent;
@@ -973,6 +974,9 @@ ngx_quic_stream_cleanup_handler(void *data)
 
     ngx_quic_queue_frame(qc, frame);
 
+    ctx = ngx_quic_get_send_ctx(qc, ssl_encryption_application);
+    ctx->ack_immediately = 1;
+
 done:
 
     (void) ngx_quic_output(pc);
@@ -994,6 +998,7 @@ ngx_quic_handle_stream_frame(ngx_connection_t *c, ngx_quic_header_t *pkt,
     ngx_quic_stream_t        *qs;
     ngx_quic_connection_t    *qc;
     ngx_quic_stream_frame_t  *f;
+    ngx_quic_send_ctx_t      *ctx;
 
     qc = ngx_quic_get_connection(c);
     f = &frame->u.stream;
@@ -1030,6 +1035,9 @@ ngx_quic_handle_stream_frame(ngx_connection_t *c, ngx_quic_header_t *pkt,
         if (f->fin) {
             sc->read->pending_eof = 1;
             qs->final_size = last;
+
+            ctx = ngx_quic_get_send_ctx(qc, frame->level);
+            ctx->ack_immediately = 1;
         }
 
         if (f->offset == 0) {
@@ -1079,6 +1087,9 @@ ngx_quic_handle_stream_frame(ngx_connection_t *c, ngx_quic_header_t *pkt,
             qc->error = NGX_QUIC_ERR_FINAL_SIZE_ERROR;
             return NGX_ERROR;
         }
+
+        ctx = ngx_quic_get_send_ctx(qc, frame->level);
+        ctx->ack_immediately = 1;
 
         rev->pending_eof = 1;
         qs->final_size = last;

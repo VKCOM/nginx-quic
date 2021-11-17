@@ -187,6 +187,8 @@ struct ngx_quic_send_ctx_s {
     ngx_uint_t                        nranges;
     ngx_quic_ack_range_t              ranges[NGX_QUIC_MAX_RANGES];
     ngx_uint_t                        send_ack;
+
+    unsigned                          ack_immediately:1;
 };
 
 
