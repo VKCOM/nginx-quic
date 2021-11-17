@@ -39,10 +39,12 @@ ngx_event_process_packet(ngx_event_t *ev, struct msghdr *msg, u_char *buffer, si
     ngx_udp_dgram_t    dgram;
     struct sockaddr   *local_sockaddr;
     ngx_listening_t   *ls;
-    ngx_event_conf_t  *ecf;
     ngx_connection_t  *c, *lc;
 
+#if (NGX_DEBUG)
+    ngx_event_conf_t  *ecf;
     ecf = ngx_event_get_conf(ngx_cycle->conf_ctx, ngx_event_core_module);
+#endif
 
     lc = ev->data;
     ls = lc->listening;
