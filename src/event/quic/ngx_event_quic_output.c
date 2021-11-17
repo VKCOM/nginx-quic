@@ -10,8 +10,8 @@
 #include <ngx_event_quic_connection.h>
 
 
-#define NGX_QUIC_MAX_UDP_PAYLOAD_OUT   1100
-#define NGX_QUIC_MAX_UDP_PAYLOAD_OUT6  1080
+#define NGX_QUIC_MAX_UDP_PAYLOAD_OUT   1252
+#define NGX_QUIC_MAX_UDP_PAYLOAD_OUT6  1232
 
 #define NGX_QUIC_MAX_UDP_SEGMENT_BUF  65487 /* 65K - IPv6 header */
 #define NGX_QUIC_MAX_SEGMENTS            64 /* UDP_MAX_SEGMENTS */

@@ -308,7 +308,7 @@ ngx_quic_new_connection(ngx_connection_t *c, ngx_quic_conf_t *conf,
     ctp->active_connection_id_limit = 2;
 
 #if (NGX_HAVE_IP_MTU_DISCOVER)
-    qc->mtu.min_probe_length = ctp->max_udp_payload_size;
+    qc->mtu.min_probe_length = NGX_QUIC_MIN_INITIAL_SIZE;
     qc->mtu.max_probe_length = qc->conf->mtu_target;
     qc->mtu.remaining_probe_count = qc->conf->mtu_attemts;
     qc->mtu.packets_between_probes = 100;
